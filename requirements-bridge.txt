@@ -1,0 +1,2 @@
+# network_tx_bridge.py — UDP → CRSF over serial (run from scripts/ or set PYTHONPATH)
+pyserial>=3.5
