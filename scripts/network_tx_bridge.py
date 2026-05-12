@@ -44,13 +44,7 @@ def _rx_utc_iso() -> str:
 _UDP_RECV_MAX = 2048
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PRIMARY_MAP = os.path.join(_SCRIPT_DIR, "controller_map.txt")
-_FALLBACK_MAP = os.path.join(_SCRIPT_DIR, "controler_map.txt")
-_DEFAULT_BRIDGE_CONFIG = (
-    _PRIMARY_MAP
-    if os.path.exists(_PRIMARY_MAP)
-    else (_FALLBACK_MAP if os.path.exists(_FALLBACK_MAP) else _PRIMARY_MAP)
-)
+_DEFAULT_BRIDGE_CONFIG = os.path.join(_SCRIPT_DIR, "controller_map.txt")
 
 CRSF_SYNC_BYTE = 0xC8
 
@@ -189,18 +183,8 @@ def main():
     )
 
     cfg_serial, cfg_baud = load_serial_from_config(args.config)
-    serial_port = args.serial if args.serial is not None else cfg_serial
+    serial_port_pref = args.serial if args.serial is not None else cfg_serial
     baud_rate = args.baud if args.baud is not None else cfg_baud
-
-    prev_serial = serial_port
-    resolved = autodetect_serial_port(baud_rate, serial_port)
-    if resolved is None:
-        raise SystemExit("No usable serial port found; connect the TX USB-UART or set --serial explicitly.")
-    if is_autoselect_serial_port(prev_serial):
-        print(f"Using auto-detected serial port: {resolved}")
-    elif str(prev_serial).strip() != str(resolved).strip():
-        print(f"Configured port {prev_serial!r} missing; using {resolved!r}.")
-    serial_port = resolved
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -251,17 +235,56 @@ def main():
     hs = threading.Thread(target=handshake_loop, daemon=True)
     hs.start()
 
-    ser = serial.Serial(serial_port, baud_rate, timeout=0)
     print(
-        f"Serial open: {serial_port} @ {baud_rate}. "
         f"UDP {args.bind}:{args.port} · TCP handshake {args.bind}:{args.handshake_port} "
-        f"as {bridge_name!r} ({args.hz:.0f} Hz CRSF)"
+        f"as {bridge_name!r} ({args.hz:.0f} Hz CRSF). Serial preference: {serial_port_pref!r}"
     )
     if args.debug:
         log.info("UDP joystick: DEBUG log line per valid packet (--debug)")
 
     period = 1.0 / max(args.hz, 1.0)
     fail_ns = int(max(args.failsafe_ms, 0.0) * 1e9)
+    serial_retry_period_s = 2.0
+
+    ser: Optional[serial.Serial] = None
+    current_serial_path: Optional[str] = None
+    last_serial_attempt_s = 0.0
+    waiting_announced = False
+
+    def try_open_serial() -> None:
+        nonlocal ser, current_serial_path, waiting_announced
+        resolved = autodetect_serial_port(baud_rate, serial_port_pref)
+        if resolved is None:
+            if not waiting_announced:
+                log.info(
+                    "No TX USB-UART detected yet (looking for /dev/ttyACM* or /dev/ttyUSB*; "
+                    "preference %r). UDP/TCP listeners are up; will keep scanning.",
+                    serial_port_pref,
+                )
+                waiting_announced = True
+            return
+        try:
+            new_ser = serial.Serial(resolved, baud_rate, timeout=0)
+        except (serial.SerialException, OSError) as e:
+            log.warning("Could not open serial %s: %s; will retry.", resolved, e)
+            return
+        ser = new_ser
+        current_serial_path = resolved
+        waiting_announced = False
+        if is_autoselect_serial_port(serial_port_pref):
+            log.info("Serial open: %s @ %d (auto-detected).", resolved, baud_rate)
+        elif str(serial_port_pref).strip() != str(resolved).strip():
+            log.info(
+                "Serial open: %s @ %d (configured %r unavailable; using detected).",
+                resolved,
+                baud_rate,
+                serial_port_pref,
+            )
+        else:
+            log.info("Serial open: %s @ %d.", resolved, baud_rate)
+
+    try_open_serial()
+    last_serial_attempt_s = time.monotonic()
 
     lock = threading.Lock()
     latest: Optional[List[int]] = None
@@ -317,13 +340,36 @@ def main():
     failsafe_pwm = [1500] * 16
     try:
         while True:
+            if ser is None:
+                now_s = time.monotonic()
+                if now_s - last_serial_attempt_s >= serial_retry_period_s:
+                    last_serial_attempt_s = now_s
+                    try_open_serial()
+                time.sleep(period)
+                continue
+
             now = time.monotonic_ns()
             with lock:
                 ch = list(latest) if latest is not None else None
                 stale = (now - last_rx) > fail_ns if fail_ns > 0 else False
             if ch is None or stale:
                 ch = failsafe_pwm
-            ser.write(pwm_channels_to_crsf_packet(ch))
+            try:
+                ser.write(pwm_channels_to_crsf_packet(ch))
+            except (serial.SerialException, OSError) as e:
+                log.warning(
+                    "Serial write failed on %s (%s); closing and re-scanning.",
+                    current_serial_path,
+                    e,
+                )
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+                ser = None
+                current_serial_path = None
+                last_serial_attempt_s = time.monotonic()
+                continue
             time.sleep(period)
     except KeyboardInterrupt:
         print("\nExiting.")
@@ -332,7 +378,11 @@ def main():
             handshake_srv.close()
         except OSError:
             pass
-        ser.close()
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:
+                pass
         sock.close()
 
 

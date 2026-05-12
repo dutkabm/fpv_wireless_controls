@@ -6,6 +6,7 @@ falls back to USB-UART bridge heuristics (STM32 VCP, CP210x, CH340, FTDI, etc.).
 """
 from __future__ import annotations
 
+import re
 import time
 
 import serial
@@ -42,6 +43,18 @@ _DEPRIORITIZE_HINTS = (
     "camera",
 )
 
+# Linux exposes legacy 16550-style motherboard UARTs as /dev/ttyS*, ARM SoC UARTs as
+# /dev/ttyAMA*/ttySAC*, etc. Modern ELRS / Crossfire TX modules connect via USB-UART
+# bridges and surface as /dev/ttyUSB* or /dev/ttyACM*. The legacy nodes often exist
+# even when no hardware is wired to them; opening one then fails with EIO at
+# tcgetattr time. Exclude them from autodetect candidates so we don't fall back
+# to a phantom port. Users who really want one can pass --serial explicitly.
+_LEGACY_DEVICE_RE = re.compile(r"^/dev/tty(S|AMA|SAC|MFD|PS|O)\d+$")
+
+
+def _is_legacy_linux_uart(device: str) -> bool:
+    return bool(_LEGACY_DEVICE_RE.match(device or ""))
+
 
 def _score_port(description: str | None, hwid: str | None) -> int:
     blob = f"{description or ''} {hwid or ''}".lower()
@@ -55,8 +68,10 @@ def _score_port(description: str | None, hwid: str | None) -> int:
     return score
 
 
-def _sorted_usb_serial_ports():
+def _sorted_usb_serial_ports(*, include_legacy: bool = False):
     ports = list(serial.tools.list_ports.comports())
+    if not include_legacy:
+        ports = [p for p in ports if not _is_legacy_linux_uart(p.device)]
     ports.sort(key=lambda p: (-_score_port(p.description, p.hwid), p.device))
     return ports
 
@@ -72,11 +87,14 @@ def _looks_like_crsf_traffic(buf: bytearray) -> bool:
     return False
 
 
-def _probe_port_for_crsf(device: str, baud_rate: int, listen_s: float = 0.22) -> bool:
+def _probe_port_for_crsf(device: str, baud_rate: int, listen_s: float = 0.22) -> tuple[bool, bool]:
+    """Return (openable, saw_crsf). `openable=False` means the device can't be opened
+    (e.g. legacy ttyS* with no real UART → EIO at tcgetattr) and should never be
+    used as a fallback choice."""
     try:
         ser = serial.Serial(device, baud_rate, timeout=0.02)
     except (serial.SerialException, OSError):
-        return False
+        return False, False
     try:
         acc = bytearray()
         deadline = time.monotonic() + listen_s
@@ -88,10 +106,12 @@ def _probe_port_for_crsf(device: str, baud_rate: int, listen_s: float = 0.22) ->
                 if len(acc) > 1024:
                     del acc[:-512]
                 if _looks_like_crsf_traffic(acc):
-                    return True
+                    return True, True
             else:
                 time.sleep(0.008)
-        return False
+        return True, False
+    except (serial.SerialException, OSError):
+        return False, False
     finally:
         try:
             ser.close()
@@ -111,21 +131,26 @@ def autodetect_serial_port(baud_rate: int, configured_port: str | None = None) -
     Return the device path (e.g. COM3, /dev/ttyACM0) to use, or None if none exists.
 
     If configured_port is set and not an auto placeholder, returns it unchanged
-    when it still appears in the current port list (user explicitly chose it).
+    when it still appears in the current port list (user explicitly chose it),
+    even if it is a legacy UART node — the user picked it deliberately.
     """
-    ports = _sorted_usb_serial_ports()
-    devices = [p.device for p in ports]
-
+    # Honor an explicit user choice (including legacy /dev/ttyS* if requested).
     if not is_autoselect_serial_port(configured_port):
         chosen = str(configured_port).strip()
-        if chosen in devices:
+        all_devices = [p.device for p in _sorted_usb_serial_ports(include_legacy=True)]
+        if chosen in all_devices:
             return chosen
 
-    if not devices:
+    ports = _sorted_usb_serial_ports()
+    if not ports:
         return None
 
+    openable_fallback: str | None = None
     for p in ports:
-        if _probe_port_for_crsf(p.device, baud_rate):
+        openable, saw_crsf = _probe_port_for_crsf(p.device, baud_rate)
+        if saw_crsf:
             return p.device
+        if openable and openable_fallback is None:
+            openable_fallback = p.device
 
-    return ports[0].device
+    return openable_fallback

@@ -58,10 +58,6 @@ _LOG = logging.getLogger(__name__)
 
 def main():
     default_config = os.path.join(SCRIPT_DIR, "controller_map.txt")
-    if not os.path.exists(default_config):
-        alt = os.path.join(SCRIPT_DIR, "controler_map.txt")
-        if os.path.exists(alt):
-            default_config = alt
 
     ap = argparse.ArgumentParser(description="Joystick → UDP client for Mini Rex network bridge")
     ap.add_argument("--config", default=default_config, help="Mapping INI path (Mini Rex joystick map)")
