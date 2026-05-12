@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import getpass
 import logging
 import os
 import socket
@@ -27,7 +28,7 @@ from network_rc_protocol import (
     CHANNEL_PAYLOAD_LEN,
     DEFAULT_HANDSHAKE_TCP_PORT,
     DEFAULT_UDP_CHANNEL_PORT,
-    HANDSHAKE_OK_LINE,
+    format_handshake_ok,
     unpack_channel_datagram,
 )
 from serial_autodetect import autodetect_serial_port, is_autoselect_serial_port
@@ -172,8 +173,15 @@ def main():
     )
     ap.add_argument("--hz", type=float, default=50.0, help="CRSF transmit rate toward TX")
     ap.add_argument("--failsafe-ms", type=float, default=500.0, help="Hold last channels; fail-safe defaults after this latency")
+    ap.add_argument(
+        "--name",
+        default=None,
+        help="Identifier sent to clients during TCP handshake (default: login user name)",
+    )
     ap.add_argument("--debug", action="store_true", help="Log each valid UDP joystick packet at DEBUG")
     args = ap.parse_args()
+
+    bridge_name = (args.name or "").strip() or getpass.getuser()
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
@@ -218,8 +226,13 @@ def main():
                 conn.settimeout(5.0)
                 data = conn.recv(64)
                 if data and data.strip() == CHANNEL_PACKET_MAGIC:
-                    conn.sendall(HANDSHAKE_OK_LINE)
-                    log.info("TCP handshake: OK sent to %s:%s", addr[0], addr[1])
+                    conn.sendall(format_handshake_ok(bridge_name))
+                    log.info(
+                        "TCP handshake: OK (%r) sent to %s:%s",
+                        bridge_name,
+                        addr[0],
+                        addr[1],
+                    )
                 else:
                     log.warning(
                         "TCP handshake: bad request from %s:%s (%r)",
@@ -241,7 +254,8 @@ def main():
     ser = serial.Serial(serial_port, baud_rate, timeout=0)
     print(
         f"Serial open: {serial_port} @ {baud_rate}. "
-        f"UDP {args.bind}:{args.port} · TCP handshake {args.bind}:{args.handshake_port} ({args.hz:.0f} Hz CRSF)"
+        f"UDP {args.bind}:{args.port} · TCP handshake {args.bind}:{args.handshake_port} "
+        f"as {bridge_name!r} ({args.hz:.0f} Hz CRSF)"
     )
     if args.debug:
         log.info("UDP joystick: DEBUG log line per valid packet (--debug)")

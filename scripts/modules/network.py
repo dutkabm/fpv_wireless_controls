@@ -7,7 +7,7 @@ import logging
 import socket
 from typing import List, Optional, Tuple
 
-from network_rc_protocol import HANDSHAKE_LINE, pack_channel_datagram
+from network_rc_protocol import HANDSHAKE_LINE, pack_channel_datagram, parse_handshake_response
 
 _LOG = logging.getLogger(__name__)
 
@@ -23,8 +23,8 @@ def validate_ipv4_text(text: str) -> Tuple[Optional[str], str]:
         return None, "Invalid IPv4 address"
 
 
-def tcp_handshake(host: str, tcp_port: int, timeout: float = 5.0) -> Tuple[bool, str]:
-    """Connect to the bridge TCP port, send HANDSHAKE_LINE, expect response starting with OK."""
+def tcp_handshake(host: str, tcp_port: int, timeout: float = 5.0) -> Tuple[bool, str, str]:
+    """Connect to the bridge TCP port, send HANDSHAKE_LINE, expect OK response (optional bridge name)."""
     _LOG.info("TCP handshake: connecting to %s:%s", host, tcp_port)
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
@@ -32,19 +32,23 @@ def tcp_handshake(host: str, tcp_port: int, timeout: float = 5.0) -> Tuple[bool,
         s.connect((host, tcp_port))
         s.sendall(HANDSHAKE_LINE)
         resp = s.recv(64)
-        if not resp.startswith(b"OK"):
+        ok, bridge_name = parse_handshake_response(resp)
+        if not ok:
             _LOG.warning(
                 "TCP handshake: unexpected reply from %s:%s: %r",
                 host,
                 tcp_port,
                 resp,
             )
-            return False, "Handshake failed (unexpected reply)"
-        _LOG.info("TCP handshake: OK from %s:%s", host, tcp_port)
-        return True, ""
+            return False, "Handshake failed (unexpected reply)", ""
+        if bridge_name:
+            _LOG.info("TCP handshake: OK from %s:%s (bridge %r)", host, tcp_port, bridge_name)
+        else:
+            _LOG.info("TCP handshake: OK from %s:%s", host, tcp_port)
+        return True, "", bridge_name
     except OSError as e:
         _LOG.warning("TCP handshake: failed %s:%s: %s", host, tcp_port, e)
-        return False, str(e)
+        return False, str(e), ""
     finally:
         try:
             s.close()

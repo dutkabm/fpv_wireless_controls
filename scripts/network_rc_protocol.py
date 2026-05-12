@@ -13,9 +13,31 @@ CHANNEL_PAYLOAD_LEN = 4 + 32  # magic + 16×uint16
 DEFAULT_UDP_CHANNEL_PORT = 50000
 DEFAULT_HANDSHAKE_TCP_PORT = 50001
 
-# One-shot TCP handshake after connect: client sends magic + LF, bridge replies OK + LF.
+# One-shot TCP handshake after connect: client sends magic + LF, bridge replies OK + optional name + LF.
 HANDSHAKE_LINE = CHANNEL_PACKET_MAGIC + b"\n"
-HANDSHAKE_OK_LINE = b"OK\n"
+HANDSHAKE_OK_LINE = b"OK\n"  # legacy; prefer format_handshake_ok()
+_HANDSHAKE_OK_MAX_NAME_BYTES = 128
+
+
+def format_handshake_ok(bridge_name: str) -> bytes:
+    """Build handshake reply: OK <sanitized_name>\\n (UTF-8)."""
+    n = (bridge_name or "").replace("\r", "").replace("\n", "").replace("\x00", "").strip()
+    if not n:
+        n = "bridge"
+    encoded = n.encode("utf-8", errors="replace")[:_HANDSHAKE_OK_MAX_NAME_BYTES]
+    return b"OK " + encoded + b"\n"
+
+
+def parse_handshake_response(resp: bytes) -> tuple[bool, str]:
+    """If first line is OK or OK <name>, return (True, bridge_name_or_empty). Else (False, '')."""
+    if not resp:
+        return False, ""
+    first = resp.split(b"\n", 1)[0].strip()
+    if first == b"OK":
+        return True, ""
+    if first.startswith(b"OK "):
+        return True, first[3:].decode("utf-8", errors="replace")
+    return False, ""
 
 
 def pack_channel_datagram(channels_1000_2000: List[int]) -> bytes:

@@ -214,7 +214,7 @@ def main():
             return
 
         def worker():
-            ok, err = tcp_handshake(host, args.handshake_port)
+            ok, err, bridge_name = tcp_handshake(host, args.handshake_port)
 
             def apply_result():
                 nonlocal bridge_connected, handshake_busy, status_text, last_err, sending, acc
@@ -238,7 +238,9 @@ def main():
                         sending = True
                         view.send_var.set("Stop sending")
                         acc = 0.0
-                        status_text = "Sending"
+                        status_text = (
+                            f"Sending — {bridge_name}" if bridge_name.strip() else "Sending"
+                        )
                         try:
                             pwm0 = get_pwm_channels_from_joystick(
                                 joy_ref.joystick, axis_map, button_map, hat_map
