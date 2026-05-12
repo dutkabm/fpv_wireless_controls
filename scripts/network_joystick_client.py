@@ -44,9 +44,11 @@ from modules.joystick import (
     prune_joystick_mappings,
 )
 from modules.network import (
+    scan_tx_bridges,
     send_pwm_datagram,
     tcp_handshake,
     try_open_udp_socket,
+    validate_ipv4_netmask,
     validate_ipv4_text,
 )
 from modules.ui import JoystickRef, NetworkJoystickUI
@@ -75,6 +77,11 @@ def main():
         type=int,
         default=DEFAULT_HANDSHAKE_TCP_PORT,
         help=f"TCP handshake port (default {DEFAULT_HANDSHAKE_TCP_PORT})",
+    )
+    ap.add_argument(
+        "--netmask",
+        default="255.255.255.0",
+        help="Subnet mask or CIDR for LAN bridge scan (255.255.255.0 or /24); used with local IPv4",
     )
     ap.add_argument("--hz", type=float, default=50.0, help="Send rate")
     ap.add_argument("--debug", action="store_true", help="Log each UDP send at DEBUG")
@@ -124,8 +131,8 @@ def main():
 
     root = ctk.CTk()
     root.title("Network FPV Controller")
-    root.geometry("1320x620")
-    root.minsize(1000, 520)
+    root.geometry("1320x660")
+    root.minsize(1000, 560)
     root.grid_columnconfigure(0, weight=1)
 
     joy_ref = JoystickRef(joystick, joy_index)
@@ -148,6 +155,7 @@ def main():
     sending = False
     bridge_connected = False
     handshake_busy = False
+    scan_busy = False
 
     def _status_display() -> str:
         s = f"Status: {status_text}"
@@ -203,6 +211,12 @@ def main():
                 fg_color=("gray75", "gray25"),
                 hover_color=("gray65", "gray35"),
             )
+            view.status_lbl.configure(text=_status_display())
+            return
+
+        if scan_busy:
+            last_err = "Wait for bridge scan to finish"
+            status_text = "Error"
             view.status_lbl.configure(text=_status_display())
             return
 
@@ -278,6 +292,50 @@ def main():
         threading.Thread(target=worker, daemon=True).start()
 
     view.connect_btn.configure(command=on_connect, fg_color=("gray75", "gray25"), hover_color=("gray65", "gray35"))
+
+    def on_scan():
+        nonlocal scan_busy, status_text, last_err
+
+        if scan_busy or handshake_busy:
+            return
+        nm_raw = view.netmask_entry.get()
+        _nm_ok, nm_err = validate_ipv4_netmask(nm_raw)
+        if nm_err:
+            last_err = nm_err
+            status_text = "Error"
+            view.reset_scan_menu_to_placeholder()
+            view.status_lbl.configure(text=_status_display())
+            return
+
+        def worker():
+            rows, serr = scan_tx_bridges(args.handshake_port, nm_raw.strip())
+
+            def apply_scan():
+                nonlocal scan_busy, status_text, last_err
+                scan_busy = False
+                view.scan_btn.configure(state="normal")
+                if serr:
+                    last_err = serr
+                    status_text = "Scan failed"
+                    view.reset_scan_menu_to_placeholder()
+                else:
+                    last_err = ""
+                    view.set_scan_results(rows)
+                    status_text = f"Scan done ({len(rows)} bridge(s))"
+                    if rows:
+                        _LOG.info("Bridge scan: %s", rows)
+                view.status_lbl.configure(text=_status_display())
+
+            root.after(0, apply_scan)
+
+        scan_busy = True
+        view.scan_btn.configure(state="disabled")
+        status_text = "Scanning LAN…"
+        last_err = ""
+        view.status_lbl.configure(text=_status_display())
+        threading.Thread(target=worker, daemon=True).start()
+
+    view.scan_btn.configure(command=on_scan)
 
     running = True
     last_raw_print_mono = 0.0

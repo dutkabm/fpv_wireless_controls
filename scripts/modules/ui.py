@@ -9,6 +9,14 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 
+_SCAN_MENU_FIRST = "(scan first)"
+_SCAN_MENU_NONE = "(none found)"
+
+
+def _bridge_scan_menu_label(ip: str, name: str) -> str:
+    disp = name.strip() if name.strip() else "(no name)"
+    return f"{ip} — {disp}"
+
 if TYPE_CHECKING:
     import pygame
 
@@ -54,6 +62,7 @@ class NetworkJoystickUI:
         self._log = logger
 
         self.mapping_live_labels: Dict[str, ctk.CTkLabel] = {}
+        self.last_scan_rows: List[Tuple[str, str]] = []
 
         self._ch_labels = (
             "Off",
@@ -231,6 +240,33 @@ class NetworkJoystickUI:
                 self.joy_var.set("(no joystick)")
         self.apply_joy_choice()
 
+    def reset_scan_menu_to_placeholder(self) -> None:
+        """Restore the scan dropdown before a successful scan (e.g. after validation error)."""
+        self.last_scan_rows = []
+        self.scan_pick_menu.configure(values=[_SCAN_MENU_FIRST])
+        self.scan_pick_var.set(_SCAN_MENU_FIRST)
+
+    def set_scan_results(self, rows: List[Tuple[str, str]]) -> None:
+        """Update bridge scan dropdown from ``[(ip, name), ...]``."""
+        self.last_scan_rows = list(rows)
+        if not rows:
+            vals = [_SCAN_MENU_NONE]
+        else:
+            vals = [_bridge_scan_menu_label(ip, nm) for ip, nm in rows]
+        self.scan_pick_menu.configure(values=vals)
+        self.scan_pick_var.set(vals[0])
+
+    def apply_scan_selection_to_ip(self) -> None:
+        """Copy selected scan row into the target IP field."""
+        sel = self.scan_pick_var.get()
+        if sel in (_SCAN_MENU_FIRST, _SCAN_MENU_NONE):
+            return
+        for ip, nm in self.last_scan_rows:
+            if _bridge_scan_menu_label(ip, nm) == sel:
+                self.ip_entry.delete(0, "end")
+                self.ip_entry.insert(0, ip)
+                return
+
     def _build(self) -> None:
         root = self.root
         args = self.args
@@ -256,10 +292,33 @@ class NetworkJoystickUI:
         self.connect_btn = ctk.CTkButton(form, textvariable=self.connect_var, width=120)
         self.connect_btn.grid(row=0, column=2, padx=(12, 0), pady=4, sticky="e")
 
-        ctk.CTkLabel(form, text="Joystick").grid(row=1, column=0, padx=(0, 8), pady=4, sticky="nw")
+        ctk.CTkLabel(form, text="Subnet mask").grid(row=1, column=0, padx=(0, 8), pady=4, sticky="w")
+        self.netmask_entry = ctk.CTkEntry(form, placeholder_text="255.255.255.0 or /24", width=160)
+        self.netmask_entry.grid(row=1, column=1, padx=0, pady=4, sticky="w")
+        self.netmask_entry.insert(0, args.netmask.strip())
+
+        self.scan_btn = ctk.CTkButton(form, text="Scan bridges", width=120)
+        self.scan_btn.grid(row=1, column=2, padx=(12, 0), pady=4, sticky="e")
+
+        ctk.CTkLabel(form, text="Found bridges").grid(row=2, column=0, padx=(0, 8), pady=4, sticky="w")
+        pick_row = ctk.CTkFrame(form, fg_color="transparent")
+        pick_row.grid(row=2, column=1, columnspan=2, padx=0, pady=4, sticky="ew")
+        pick_row.grid_columnconfigure(0, weight=1)
+        self.scan_pick_var = ctk.StringVar(value=_SCAN_MENU_FIRST)
+        self.scan_pick_menu = ctk.CTkOptionMenu(
+            pick_row,
+            variable=self.scan_pick_var,
+            values=[_SCAN_MENU_FIRST],
+            width=360,
+        )
+        self.scan_pick_menu.grid(row=0, column=0, padx=(0, 8), sticky="ew")
+        self.apply_scan_btn = ctk.CTkButton(pick_row, text="Use IP", width=90)
+        self.apply_scan_btn.grid(row=0, column=1, sticky="e")
+
+        ctk.CTkLabel(form, text="Joystick").grid(row=3, column=0, padx=(0, 8), pady=4, sticky="nw")
 
         joy_row = ctk.CTkFrame(form, fg_color="transparent")
-        joy_row.grid(row=1, column=1, columnspan=2, padx=0, pady=4, sticky="ew")
+        joy_row.grid(row=3, column=1, columnspan=2, padx=0, pady=4, sticky="ew")
         joy_row.grid_columnconfigure(0, weight=1)
 
         self.joy_var = ctk.StringVar(value="(no joystick)")
@@ -376,6 +435,8 @@ class NetworkJoystickUI:
 
         rescan_btn = ctk.CTkButton(joy_row, text="Rescan", width=90, command=self.refresh_joysticks)
         rescan_btn.grid(row=0, column=1, sticky="e")
+
+        self.apply_scan_btn.configure(command=self.apply_scan_selection_to_ip)
 
         self.send_var = ctk.StringVar(value="Start sending")
         self.send_btn = ctk.CTkButton(
