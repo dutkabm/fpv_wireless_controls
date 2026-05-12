@@ -1,3 +1,4 @@
+import argparse
 import pygame
 import sys
 import serial
@@ -66,14 +67,14 @@ def crsf_validate_frame(frame):
     return crc == frame[-1]
 
 def packCrsfToBytes(channels):
-    # channels is in CRSF format! (0-2047)
+    # channels is in CRSF format (11-bit legacy ticks, typically 172–1811)
     if len(channels) != 16:
         raise ValueError('CRSF must have 16 channels')
     result = bytearray()
     bit_buffer = 0
     bits_in_buffer = 0
     for ch in channels:
-        bit_buffer |= ch << bits_in_buffer
+        bit_buffer |= (int(ch) & 0x7FF) << bits_in_buffer
         bits_in_buffer += 11
         while bits_in_buffer >= 8:
             result.append(bit_buffer & 0xFF)
@@ -100,9 +101,11 @@ def map_button(value):
     # Map button value to 1000 or 2000
     return 2000 if value else 1000
 
-def map_to_crsf(value):
-    # Map 1000-2000 to 0-2047 for CRSF protocol
-    return int((value - 1000) * 2047 / 1000)
+def map_to_crsf(us_pwm):
+    # CRSF 0x16 legacy: 172→~988µs, 992→1500µs, 1811→~2012µs (TBS / Betaflight)
+    pwm = max(1000, min(2000, int(us_pwm)))
+    ticks = 172.0 + (pwm - 988) * (1811 - 172) / (2012 - 988)
+    return max(172, min(1811, int(round(ticks))))
 
 def get_channels_from_joystick(joystick, axis_channel_map, button_channel_map, hat_channel_map):
     # SDL/Cocoa: event processing must run on the main thread (macOS throws otherwise).
@@ -547,6 +550,10 @@ def draw_gui_elements(selected_serial_port, selected_baud_rate, selected_joystic
 
 def main():
     clock = pygame.time.Clock()
+    _raw_ap = argparse.ArgumentParser(add_help=False)
+    _raw_ap.add_argument("--print-raw", action="store_true", help="Print raw axes/buttons/hats to stdout (throttled)")
+    _raw_ap.add_argument("--print-raw-hz", type=float, default=5.0, help="Max lines/sec with --print-raw (default 5)")
+    print_raw_cli, _ = _raw_ap.parse_known_args()
 
     # Default parameters
     default_joystick_index = None  # None implies no joystick selected
@@ -785,6 +792,8 @@ def main():
     ser_write_thread = threading.Thread(target=serial_write_thread_func, daemon=True)
     ser_write_thread.start()
 
+    last_raw_print_mono = 0.0
+
     while running:
         screen.fill(WHITE)  # Clear the screen with white before drawing
 
@@ -959,6 +968,16 @@ def main():
                 input_status[f'hat_{i}_y'] = hat_y
         else:
             input_status = {}
+
+        if print_raw_cli.print_raw and joystick:
+            nowm = time.monotonic()
+            interval = 1.0 / max(print_raw_cli.print_raw_hz, 0.25)
+            if nowm - last_raw_print_mono >= interval:
+                last_raw_print_mono = nowm
+                axes = [joystick.get_axis(i) for i in range(joystick.get_numaxes())]
+                btns = [joystick.get_button(i) for i in range(joystick.get_numbuttons())]
+                hats = [joystick.get_hat(i) for i in range(joystick.get_numhats())]
+                print(f"raw joystick axes={axes} buttons={btns} hats={hats}", flush=True)
 
         # Map the inputs to channels
         channels = get_channels_from_joystick(joystick, axis_channel_map, button_channel_map, hat_channel_map)

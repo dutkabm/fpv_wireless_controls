@@ -49,14 +49,14 @@ def crsf_validate_frame(frame):
     return crc == frame[-1]
 
 def packCrsfToBytes(channels):
-    # channels is in CRSF format! (0-2047)
+    # channels is in CRSF format (11-bit legacy ticks, typically 172–1811)
     if len(channels) != 16:
         raise ValueError('CRSF must have 16 channels')
     result = bytearray()
     bit_buffer = 0
     bits_in_buffer = 0
     for ch in channels:
-        bit_buffer |= ch << bits_in_buffer
+        bit_buffer |= (int(ch) & 0x7FF) << bits_in_buffer
         bits_in_buffer += 11
         while bits_in_buffer >= 8:
             result.append(bit_buffer & 0xFF)
@@ -75,9 +75,11 @@ def channelsCrsfToChannelsPacket(channels):
     packet.append(crc)
     return packet
 
-def map_to_crsf(value):
-    # Map 1000-2000 to 0-2047 for CRSF protocol
-    return int((value - 1000) * 2047 / 1000)
+def map_to_crsf(us_pwm):
+    # CRSF 0x16 legacy: 172→~988µs, 992→1500µs, 1811→~2012µs (TBS / Betaflight)
+    pwm = max(1000, min(2000, int(us_pwm)))
+    ticks = 172.0 + (pwm - 988) * (1811 - 172) / (2012 - 988)
+    return max(172, min(1811, int(round(ticks))))
 
 def get_channels_from_joystick(joystick, axis_channel_map, button_channel_map, hat_channel_map):
     channels = [1500] * 16  # Initialize all channels to 1500
