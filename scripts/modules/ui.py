@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import tkinter.messagebox as tk_messagebox
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import customtkinter as ctk
@@ -36,6 +37,7 @@ class NetworkJoystickUI:
         self,
         root: ctk.CTk,
         *,
+        config_path: str,
         args: Any,
         joy_ref: JoystickRef,
         axis_map: Dict,
@@ -49,6 +51,7 @@ class NetworkJoystickUI:
         logger: logging.Logger,
     ) -> None:
         self.root = root
+        self.config_path = os.path.abspath(config_path)
         self.args = args
         self.joy_ref = joy_ref
         self.axis_map = axis_map
@@ -128,6 +131,32 @@ class NetworkJoystickUI:
         if k not in d:
             return
         d[k]["invert"] = bool(inv)
+
+    def save_config_to_file(self) -> None:
+        from modules.joystick import save_controller_config
+
+        try:
+            save_controller_config(
+                self.config_path,
+                self.joy_ref.joy_index,
+                self.axis_map,
+                self.button_map,
+                self.hat_map,
+            )
+        except OSError as e:
+            self._log.warning("Save controller map failed: %s", e)
+            tk_messagebox.showerror(
+                "Save failed",
+                f"Could not write {self.config_path}:\n{e}",
+                parent=self.root,
+            )
+            return
+        self._log.info("Saved joystick map to %s", self.config_path)
+        tk_messagebox.showinfo(
+            "Saved",
+            f"Joystick configuration saved to:\n{self.config_path}",
+            parent=self.root,
+        )
 
     def rebuild_mapping_ui(self) -> None:
         self.mapping_live_labels.clear()
@@ -434,7 +463,9 @@ class NetworkJoystickUI:
         self.joy_menu.grid(row=0, column=0, padx=(0, 8), sticky="ew")
 
         rescan_btn = ctk.CTkButton(joy_row, text="Rescan", width=90, command=self.refresh_joysticks)
-        rescan_btn.grid(row=0, column=1, sticky="e")
+        rescan_btn.grid(row=0, column=1, padx=(0, 8), sticky="e")
+        save_map_btn = ctk.CTkButton(joy_row, text="Save", width=90, command=self.save_config_to_file)
+        save_map_btn.grid(row=0, column=2, sticky="e")
 
         self.apply_scan_btn.configure(command=self.apply_scan_selection_to_ip)
 

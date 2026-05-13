@@ -134,6 +134,7 @@ def main():
     joy_ref = JoystickRef(joystick, joy_index)
     view = NetworkJoystickUI(
         root,
+        config_path=args.config,
         args=args,
         joy_ref=joy_ref,
         axis_map=axis_map,

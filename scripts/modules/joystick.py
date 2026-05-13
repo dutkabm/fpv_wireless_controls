@@ -6,7 +6,7 @@ import configparser
 import logging
 import os
 import threading
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pygame
 
@@ -175,6 +175,74 @@ def load_controller_config(config_path: str) -> Tuple[Optional[int], Dict, Dict,
                     hat_map["y"][hat_key] = mapping
 
     return default_joystick_index, axis_map, button_map, hat_map
+
+
+def _format_mapping_ini_value(mapping: Dict) -> str:
+    inv = "true" if mapping.get("invert") else "false"
+    return f"channel:{int(mapping['channel'])}, invert:{inv}"
+
+
+def _mapping_ini_key_order(key: str) -> Tuple[Any, ...]:
+    if key.startswith("axis_") and key[5:].isdigit():
+        return (0, int(key[5:]))
+    if key.startswith("button_") and key[7:].isdigit():
+        return (1, int(key[7:]))
+    parts = key.split("_")
+    if len(parts) == 3 and parts[0] == "hat" and parts[1].isdigit() and parts[2] in ("x", "y"):
+        return (2, int(parts[1]), 0 if parts[2] == "x" else 1)
+    return (9, key)
+
+
+def save_controller_config(
+    config_path: str,
+    joy_index: Optional[int],
+    axis_map: Dict,
+    button_map: Dict,
+    hat_map: Dict,
+) -> None:
+    """Write ``[General].joystick_index`` and mapping sections to ``config_path``.
+
+    Other ``[General]`` keys (e.g. ``baud_rate``, ``serial_port``) are kept when the file
+    already exists. Comments in the file are not preserved (ConfigParser rewrite).
+    """
+    cfg = configparser.ConfigParser()
+    if os.path.exists(config_path):
+        cfg.read(config_path)
+
+    if not cfg.has_section("General"):
+        cfg.add_section("General")
+    ji = "-1" if joy_index is None else str(int(joy_index))
+    cfg.set("General", "joystick_index", ji)
+
+    def _rewrite_section(name: str, keys_to_values: List[Tuple[str, str]]) -> None:
+        if cfg.has_section(name):
+            for opt in list(cfg.options(name)):
+                cfg.remove_option(name, opt)
+        else:
+            cfg.add_section(name)
+        for opt_key, opt_val in keys_to_values:
+            cfg.set(name, opt_key, opt_val)
+
+    axis_lines = [(k, _format_mapping_ini_value(axis_map[k])) for k in sorted(axis_map.keys(), key=_mapping_ini_key_order)]
+    _rewrite_section("AxisMappings", axis_lines)
+
+    btn_lines = [(k, _format_mapping_ini_value(button_map[k])) for k in sorted(button_map.keys(), key=_mapping_ini_key_order)]
+    _rewrite_section("ButtonMappings", btn_lines)
+
+    if cfg.has_section("HatMappings"):
+        cfg.remove_section("HatMappings")
+    hat_keys: List[Tuple[str, str]] = []
+    for side in ("x", "y"):
+        hm = hat_map.get(side, {})
+        for k in sorted(hm.keys(), key=_mapping_ini_key_order):
+            hat_keys.append((k, _format_mapping_ini_value(hm[k])))
+    if hat_keys:
+        cfg.add_section("HatMappings")
+        for opt_key, opt_val in hat_keys:
+            cfg.set("HatMappings", opt_key, opt_val)
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        cfg.write(f)
 
 
 def prune_joystick_mappings(
