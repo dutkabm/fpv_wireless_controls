@@ -1,7 +1,7 @@
 [General]
 # General settings for the controller
 joystick_index = 0          # Index of the joystick (0-based). Set to -1 for no joystick.
-baud_rate = 921600          # Baud rate for serial communication
+baud_rate = 400000          # Baud rate for serial communication (ELRS CRSF common)
 
 [AxisMappings]
 # Mapping joystick axes to CRSF channels

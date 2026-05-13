@@ -122,7 +122,7 @@ def _strip_inline_comment(value: Optional[str]) -> str:
 
 def load_serial_from_config(config_path: str) -> tuple[str, int]:
     default_port = "AUTO"
-    default_baud = 921600
+    default_baud = 400000
     if not os.path.exists(config_path):
         return default_port, default_baud
     cfg = configparser.ConfigParser()
@@ -159,7 +159,7 @@ def main():
         default=None,
         help="Serial device (default: AUTO or from controller_map.txt General.serial_port)",
     )
-    ap.add_argument("--baud", type=int, default=None, help="Baud rate (default from controller_map.txt or 921600)")
+    ap.add_argument("--baud", type=int, default=None, help="Baud rate (default from controller_map.txt or 400000)")
     ap.add_argument(
         "--config",
         default=_DEFAULT_BRIDGE_CONFIG,
@@ -257,7 +257,7 @@ def main():
         if resolved is None:
             if not waiting_announced:
                 log.info(
-                    "No TX USB-UART detected yet (looking for /dev/ttyACM* or /dev/ttyUSB*; "
+                    "No TX USB-UART detected yet (Linux: ttyACM*/ttyUSB*; macOS: cu.usbserial* / cu.usbmodem*; "
                     "preference %r). UDP/TCP listeners are up; will keep scanning.",
                     serial_port_pref,
                 )

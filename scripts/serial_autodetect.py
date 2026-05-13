@@ -22,6 +22,8 @@ _PREFERRED_HINTS = (
     "cp210",
     "silicon labs",
     "ftdi",
+    "usbserial",  # macOS: /dev/cu.usbserial-*
+    "usbmodem",  # macOS: CDC ACM style
     "usb serial",
     "usb-serial",
     "acm",
@@ -51,13 +53,34 @@ _DEPRIORITIZE_HINTS = (
 # to a phantom port. Users who really want one can pass --serial explicitly.
 _LEGACY_DEVICE_RE = re.compile(r"^/dev/tty(S|AMA|SAC|MFD|PS|O)\d+$")
 
+# macOS (and similar): SPP / Bluetooth serial endpoints are not the ELRS USB-UART.
+_BT_INCOMING_RE = re.compile(r"bluetooth-incoming-port", re.IGNORECASE)
+# macOS: Developer / system virtual serial (not a USB-UART bridge).
+_DEBUG_CONSOLE_RE = re.compile(r"debug-console", re.IGNORECASE)
+
 
 def _is_legacy_linux_uart(device: str) -> bool:
     return bool(_LEGACY_DEVICE_RE.match(device or ""))
 
 
-def _score_port(description: str | None, hwid: str | None) -> int:
-    blob = f"{description or ''} {hwid or ''}".lower()
+def _is_host_virtual_serial_noise(device: str) -> bool:
+    """Ports that often enumerate as serial but are not CRSF TX modules."""
+    if not device:
+        return False
+    if _BT_INCOMING_RE.search(device):
+        return True
+    if _DEBUG_CONSOLE_RE.search(device):
+        return True
+    return False
+
+
+def _enumerate_devices_raw() -> list[str]:
+    """All device paths pyserial reports (no autodetect filtering)."""
+    return [p.device for p in serial.tools.list_ports.comports()]
+
+
+def _score_port(device: str | None, description: str | None, hwid: str | None) -> int:
+    blob = f"{device or ''} {description or ''} {hwid or ''}".lower()
     score = 0
     for hint in _PREFERRED_HINTS:
         if hint in blob:
@@ -72,7 +95,8 @@ def _sorted_usb_serial_ports(*, include_legacy: bool = False):
     ports = list(serial.tools.list_ports.comports())
     if not include_legacy:
         ports = [p for p in ports if not _is_legacy_linux_uart(p.device)]
-    ports.sort(key=lambda p: (-_score_port(p.description, p.hwid), p.device))
+    ports = [p for p in ports if not _is_host_virtual_serial_noise(p.device)]
+    ports.sort(key=lambda p: (-_score_port(p.device, p.description, p.hwid), p.device))
     return ports
 
 
@@ -137,8 +161,7 @@ def autodetect_serial_port(baud_rate: int, configured_port: str | None = None) -
     # Honor an explicit user choice (including legacy /dev/ttyS* if requested).
     if not is_autoselect_serial_port(configured_port):
         chosen = str(configured_port).strip()
-        all_devices = [p.device for p in _sorted_usb_serial_ports(include_legacy=True)]
-        if chosen in all_devices:
+        if chosen in _enumerate_devices_raw():
             return chosen
 
     ports = _sorted_usb_serial_ports()
