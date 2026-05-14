@@ -23,7 +23,7 @@ from typing import List, Optional
 
 import serial
 
-from network_rc_protocol import (
+from modules.network import (
     CHANNEL_PACKET_MAGIC,
     CHANNEL_PAYLOAD_LEN,
     DEFAULT_HANDSHAKE_TCP_PORT,
@@ -31,7 +31,7 @@ from network_rc_protocol import (
     format_handshake_ok,
     unpack_channel_datagram,
 )
-from serial_autodetect import autodetect_serial_port, is_autoselect_serial_port
+from modules.tx_port import autodetect_serial_port, is_autoselect_serial_port
 
 log = logging.getLogger(__name__)
 

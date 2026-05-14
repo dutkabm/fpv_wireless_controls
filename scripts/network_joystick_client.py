@@ -2,6 +2,7 @@
 """
 PC / laptop: read a local joystick (controller_map.txt + on-screen map table), show 16 channel meters,
 TCP-handshake with the Pi bridge on Connect, then UDP-send 16-channel frames at the configured rate.
+Includes a Box tab for ``raspberry.box_server`` (status, LED, servo, camera stream URL).
 """
 
 from __future__ import annotations
@@ -25,11 +26,6 @@ if sys.platform == "darwin" and "SDL_VIDEODRIVER" not in os.environ:
 
 import pygame
 
-from network_rc_protocol import (
-    DEFAULT_HANDSHAKE_TCP_PORT,
-    DEFAULT_UDP_CHANNEL_PORT,
-)
-
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
@@ -45,6 +41,8 @@ from modules.joystick import (
     prune_joystick_mappings,
 )
 from modules.network import (
+    DEFAULT_HANDSHAKE_TCP_PORT,
+    DEFAULT_UDP_CHANNEL_PORT,
     scan_tx_bridges,
     send_pwm_datagram,
     tcp_handshake,
@@ -89,7 +87,18 @@ def main():
         default=5.0,
         help="Max print lines per second with --print-raw (default 5)",
     )
+    ap.add_argument(
+        "--box-http-port",
+        type=int,
+        default=50502,
+        help="Pi box_server HTTP port (Box tab; default 50502)",
+    )
+    ap.add_argument("--box-http-token", default="", help="Optional BOX_HTTP_TOKEN for box_server (Box tab)")
+    ap.add_argument("--box-poll-ms", type=int, default=1500, help="Box status poll interval in ms (min 500)")
+    ap.add_argument("--box-http-timeout", type=float, default=5.0, help="Box HTTP request timeout (s)")
     args = ap.parse_args()
+    if args.box_poll_ms < 500:
+        args.box_poll_ms = 500
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
@@ -128,8 +137,8 @@ def main():
 
     root = ctk.CTk()
     root.title("Network FPV Controller")
-    root.geometry("1320x660")
-    root.minsize(1000, 560)
+    root.geometry("1320x700")
+    root.minsize(1000, 580)
     root.grid_columnconfigure(0, weight=1)
 
     joy_ref = JoystickRef(joystick, joy_index)
@@ -427,6 +436,7 @@ def main():
     def on_closing():
         nonlocal running
         running = False
+        view.box_panel.shutdown()
         if sock is not None:
             sock.close()
         if joy_ref.joystick is not None:

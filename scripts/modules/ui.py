@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 
+from modules.box_remote_ui import BoxRemotePanel
+
 _SCAN_MENU_FIRST = "(scan first)"
 _SCAN_MENU_NONE = "(none found)"
 
@@ -332,15 +334,26 @@ class NetworkJoystickUI:
         args = self.args
         joy_ref = self.joy_ref
 
+        self.tabs = ctk.CTkTabview(root)
+        self.tabs.grid(row=0, column=0, padx=16, pady=(16, 4), sticky="nsew")
+        root.grid_rowconfigure(0, weight=1)
+
+        joy_tab = self.tabs.add("Joystick")
+        joy_tab.grid_columnconfigure(0, weight=1)
+        joy_tab.grid_rowconfigure(2, weight=1)
+
+        box_tab = self.tabs.add("Box")
+        box_tab.grid_columnconfigure(0, weight=1)
+
         title = ctk.CTkLabel(
-            root,
+            joy_tab,
             text="Network joystick → Pi bridge (TCP connect · UDP channels)",
             font=ctk.CTkFont(size=18, weight="bold"),
         )
-        title.grid(row=0, column=0, padx=16, pady=(16, 8), sticky="w")
+        title.grid(row=0, column=0, padx=0, pady=(0, 8), sticky="w")
 
-        form = ctk.CTkFrame(root, fg_color="transparent")
-        form.grid(row=1, column=0, padx=16, pady=4, sticky="ew")
+        form = ctk.CTkFrame(joy_tab, fg_color="transparent")
+        form.grid(row=1, column=0, padx=0, pady=4, sticky="ew")
         form.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(form, text="Target IP").grid(row=0, column=0, padx=(0, 8), pady=4, sticky="w")
@@ -390,9 +403,8 @@ class NetworkJoystickUI:
             elif menu_vals:
                 self.joy_var.set(menu_vals[0])
 
-        content = ctk.CTkFrame(root, fg_color="transparent")
-        content.grid(row=2, column=0, sticky="nsew", padx=16, pady=(2, 6))
-        root.grid_rowconfigure(2, weight=1)
+        content = ctk.CTkFrame(joy_tab, fg_color="transparent")
+        content.grid(row=2, column=0, sticky="nsew", padx=0, pady=(2, 6))
         content.grid_columnconfigure(1, weight=1)
         content.grid_rowconfigure(0, weight=1)
 
@@ -500,6 +512,13 @@ class NetworkJoystickUI:
 
         self.apply_scan_btn.configure(command=self.apply_scan_selection_to_ip)
 
+        self.box_panel = BoxRemotePanel(
+            box_tab,
+            root=root,
+            args=args,
+            get_target_ip=lambda: self.ip_entry.get(),
+        )
+
         self.send_var = ctk.StringVar(value="Start sending")
         self.send_btn = ctk.CTkButton(
             root,
@@ -508,15 +527,15 @@ class NetworkJoystickUI:
             fg_color="gray40",
             hover_color="gray35",
         )
-        self.send_btn.grid(row=3, column=0, padx=16, pady=8, sticky="w")
+        self.send_btn.grid(row=1, column=0, padx=16, pady=8, sticky="w")
 
         self.hint = ctk.CTkLabel(
             root,
-            text="Connect · Map table CH1–16 · Trig on a button toggles that channel 1000/2000 on each press · --hz",
+            text="Connect · Map table CH1–16 · Trig on a button toggles that channel 1000/2000 on each press · --hz · Box tab = enclosure HTTP",
             font=ctk.CTkFont(size=12),
             text_color="gray60",
         )
-        self.hint.grid(row=4, column=0, padx=16, pady=(0, 4), sticky="w")
+        self.hint.grid(row=2, column=0, padx=16, pady=(0, 4), sticky="w")
 
         self.status_lbl = ctk.CTkLabel(root, text="", font=ctk.CTkFont(size=13), anchor="w")
-        self.status_lbl.grid(row=5, column=0, padx=16, pady=(4, 16), sticky="ew")
+        self.status_lbl.grid(row=3, column=0, padx=16, pady=(4, 16), sticky="ew")

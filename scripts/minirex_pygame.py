@@ -9,7 +9,7 @@ import serial.tools.list_ports
 import configparser
 import os
 
-from serial_autodetect import autodetect_serial_port, is_autoselect_serial_port
+from modules.tx_port import autodetect_serial_port, is_autoselect_serial_port
 
 # Initialize pygame
 pygame.init()

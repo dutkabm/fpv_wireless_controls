@@ -1,0 +1,6 @@
+# Pi: box_control / models / video / box_server (stdlib HTTP; optional system rpicam-vid)
+adafruit-blinka>=8.20.0
+adafruit-circuitpython-bme280>=2.6.0
+adafruit-circuitpython-bmp280>=3.2.0
+adafruit-circuitpython-ads1x15>=2.2.0
+gpiozero>=2.0
