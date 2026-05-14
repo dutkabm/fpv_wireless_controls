@@ -7,9 +7,9 @@ axis_0 = channel:1, invert:false
 axis_1 = channel:2, invert:false
 axis_2 = channel:3, invert:false
 axis_3 = channel:4, invert:false
-axis_4 = channel:5, invert:false
 
 [ButtonMappings]
+button_0 = channel:5, invert:false, trigger:true
 button_1 = channel:6, invert:false
 button_2 = channel:7, invert:false
 button_3 = channel:8, invert:false

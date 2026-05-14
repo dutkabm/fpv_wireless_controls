@@ -35,6 +35,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from modules.joystick import (
+    ButtonToggleLatch,
     apply_rc_preset_mappings,
     get_pwm_channels_from_joystick,
     joy_menu_values,
@@ -149,6 +150,8 @@ def main():
     )
     view.apply_joy_choice()
 
+    toggle_latch = ButtonToggleLatch()
+
     sending = False
     bridge_connected = False
     handshake_busy = False
@@ -254,7 +257,11 @@ def main():
                         )
                         try:
                             pwm0 = get_pwm_channels_from_joystick(
-                                joy_ref.joystick, axis_map, button_map, hat_map
+                                joy_ref.joystick,
+                                axis_map,
+                                button_map,
+                                hat_map,
+                                toggle_latch,
                             )
                             n0 = send_pwm_datagram(sock, host, args.target_port, pwm0)
                             _LOG.info(
@@ -345,7 +352,9 @@ def main():
         dt = now - last_tick
         last_tick = now
 
-        pwm = get_pwm_channels_from_joystick(joy_ref.joystick, axis_map, button_map, hat_map)
+        pwm = get_pwm_channels_from_joystick(
+            joy_ref.joystick, axis_map, button_map, hat_map, toggle_latch
+        )
         j = joy_ref.joystick
         if j is not None:
             for key, lbl in view.mapping_live_labels.items():
@@ -356,8 +365,13 @@ def main():
                         lbl.configure(text=f"{v:+.4f}")
                     elif key.startswith("button_"):
                         idx = int(key.split("_", 1)[1])
-                        b = j.get_button(idx)
-                        lbl.configure(text="on" if b else "off")
+                        m = button_map.get(key, {})
+                        if m.get("trigger"):
+                            hi = toggle_latch.latched_high.get(key, False)
+                            lbl.configure(text="2000" if hi else "1000")
+                        else:
+                            b = j.get_button(idx)
+                            lbl.configure(text="on" if b else "off")
                     elif key.startswith("hat_"):
                         parts = key.split("_")
                         hi = int(parts[1])

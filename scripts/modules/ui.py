@@ -123,14 +123,30 @@ class NetworkJoystickUI:
         if ch is None:
             d.pop(k, None)
         else:
-            inv = d.get(k, {}).get("invert", False) if k in d else False
-            d[k] = {"channel": ch, "invert": inv}
+            prev = d.get(k, {}) if k in d else {}
+            inv = prev.get("invert", False)
+            ent: Dict = {"channel": ch, "invert": inv}
+            if key.startswith("button_"):
+                if prev.get("trigger"):
+                    ent["trigger"] = True
+            d[k] = ent
 
     def _set_mapping_invert(self, key: str, inv: bool) -> None:
         d, k = self._mapping_row_target(key)
         if k not in d:
             return
         d[k]["invert"] = bool(inv)
+
+    def _set_mapping_trigger(self, key: str, on: bool) -> None:
+        if not key.startswith("button_"):
+            return
+        d, k = self._mapping_row_target(key)
+        if k not in d:
+            return
+        if on:
+            d[k]["trigger"] = True
+        else:
+            d[k].pop("trigger", None)
 
     def save_config_to_file(self) -> None:
         from modules.joystick import save_controller_config
@@ -173,8 +189,11 @@ class NetworkJoystickUI:
         ctk.CTkLabel(hdr, text="Inv", width=36, anchor="center", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=2, padx=4
         )
-        ctk.CTkLabel(hdr, text="Raw", width=100, anchor="w", font=ctk.CTkFont(weight="bold")).grid(
+        ctk.CTkLabel(hdr, text="Trig", width=40, anchor="center", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=3, padx=4
+        )
+        ctk.CTkLabel(hdr, text="Raw", width=100, anchor="w", font=ctk.CTkFont(weight="bold")).grid(
+            row=0, column=4, padx=4
         )
 
         j = self.joy_ref.joystick
@@ -184,7 +203,7 @@ class NetworkJoystickUI:
 
         axis_hints = ("roll", "pitch", "yaw", "throttle")
 
-        def add_row(key: str, title: str) -> None:
+        def add_row(key: str, title: str, *, is_button: bool = False) -> None:
             rowf = ctk.CTkFrame(self.map_scroll, fg_color="transparent")
             rowf.pack(fill="x", pady=1)
             ctk.CTkLabel(rowf, text=title, width=200, anchor="w").grid(row=0, column=0, padx=4, sticky="w")
@@ -205,18 +224,30 @@ class NetworkJoystickUI:
                 self._set_mapping_invert(kk, iv.get())
 
             ctk.CTkCheckBox(rowf, text="", width=36, variable=inv_var, command=_inv_cmd).grid(row=0, column=2, padx=4)
+            if is_button:
+                trig0 = bool(d.get(k, {}).get("trigger", False)) if k in d else False
+                trig_var = ctk.BooleanVar(value=trig0)
+
+                def _tr_cmd(kk: str = key, tv: ctk.BooleanVar = trig_var) -> None:
+                    self._set_mapping_trigger(kk, tv.get())
+
+                ctk.CTkCheckBox(rowf, text="", width=40, variable=trig_var, command=_tr_cmd).grid(
+                    row=0, column=3, padx=4
+                )
+            else:
+                ctk.CTkLabel(rowf, text="", width=40).grid(row=0, column=3, padx=4)
             live = ctk.CTkLabel(rowf, text="—", width=100, anchor="w", font=self._font_val)
-            live.grid(row=0, column=3, padx=4, sticky="w")
+            live.grid(row=0, column=4, padx=4, sticky="w")
             self.mapping_live_labels[key] = live
 
         for i in range(j.get_numaxes()):
             hint = axis_hints[i] if i < len(axis_hints) else f"axis {i}"
-            add_row(f"axis_{i}", f"Axis {i} ({hint})")
+            add_row(f"axis_{i}", f"Axis {i} ({hint})", is_button=False)
         for i in range(j.get_numbuttons()):
-            add_row(f"button_{i}", f"Button {i}")
+            add_row(f"button_{i}", f"Button {i}", is_button=True)
         for i in range(j.get_numhats()):
-            add_row(f"hat_{i}_x", f"Hat {i} X")
-            add_row(f"hat_{i}_y", f"Hat {i} Y")
+            add_row(f"hat_{i}_x", f"Hat {i} X", is_button=False)
+            add_row(f"hat_{i}_y", f"Hat {i} Y", is_button=False)
 
     def apply_joy_choice(self, choice: Optional[str] = None) -> None:
         choice = choice if choice is not None else self.joy_var.get()
@@ -377,8 +408,8 @@ class NetworkJoystickUI:
 
         self.map_scroll = ctk.CTkScrollableFrame(
             content,
-            label_text="Joystick Channels (CH1–4 sticks, CH5–8 buttons preset; assign extra axes as switches)",
-            width=460,
+            label_text="Joystick Channels (CH1–4 sticks, CH5–8 buttons preset; Trig = toggle 1000↔2000 each press)",
+            width=520,
             height=360,
         )
         self.map_scroll.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
@@ -481,7 +512,7 @@ class NetworkJoystickUI:
 
         self.hint = ctk.CTkLabel(
             root,
-            text="Connect · Map table assigns axes/buttons/hats to CH1–16 (preset CH1–4 sticks, CH5–8 first buttons) · --hz",
+            text="Connect · Map table CH1–16 · Trig on a button toggles that channel 1000/2000 on each press · --hz",
             font=ctk.CTkFont(size=12),
             text_color="gray60",
         )

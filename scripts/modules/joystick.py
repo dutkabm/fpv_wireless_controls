@@ -31,14 +31,36 @@ def map_button(value: object) -> int:
     return 2000 if value else 1000
 
 
+class ButtonToggleLatch:
+    """Rising-edge latch for ``trigger`` button mappings (alternate 1000 / 2000 per press)."""
+
+    __slots__ = ("prev_pressed", "latched_high", "_joy_id")
+
+    def __init__(self) -> None:
+        self.prev_pressed: Dict[str, bool] = {}
+        self.latched_high: Dict[str, bool] = {}
+        self._joy_id: Optional[int] = None
+
+    def sync_joystick(self, joystick: Optional[pygame.joystick.Joystick]) -> None:
+        jid = id(joystick) if joystick is not None else None
+        if jid != self._joy_id:
+            self._joy_id = jid
+            self.prev_pressed.clear()
+            self.latched_high.clear()
+
+
 def get_pwm_channels_from_joystick(
     joystick: Optional[pygame.joystick.Joystick],
     axis_channel_map: Dict,
     button_channel_map: Dict,
     hat_channel_map: Dict,
+    toggle_latch: Optional[ButtonToggleLatch] = None,
 ) -> List[int]:
     if threading.current_thread() is threading.main_thread():
         pygame.event.pump()
+
+    if toggle_latch is not None:
+        toggle_latch.sync_joystick(joystick)
 
     channels = [1500] * 16
     if not joystick:
@@ -63,7 +85,19 @@ def get_pwm_channels_from_joystick(
     for button_key, mapping in button_channel_map.items():
         channel_num = mapping["channel"]
         invert = mapping.get("invert", False)
-        value = map_button(button_values.get(button_key, 0))
+        if mapping.get("trigger"):
+            if toggle_latch is not None:
+                pressed = bool(button_values.get(button_key, 0))
+                prev = toggle_latch.prev_pressed.get(button_key, False)
+                if pressed and not prev:
+                    was_high = toggle_latch.latched_high.get(button_key, False)
+                    toggle_latch.latched_high[button_key] = not was_high
+                toggle_latch.prev_pressed[button_key] = pressed
+                value = 2000 if toggle_latch.latched_high.get(button_key, False) else 1000
+            else:
+                value = map_button(button_values.get(button_key, 0))
+        else:
+            value = map_button(button_values.get(button_key, 0))
         if invert:
             value = 3000 - value
         channels[channel_num - 1] = value
@@ -151,7 +185,10 @@ def load_controller_config(config_path: str) -> Tuple[Optional[int], Dict, Dict,
                         mapping["channel"] = int(v)
                     elif k == "invert":
                         mapping["invert"] = v == "true"
+                    elif k == "trigger":
+                        mapping["trigger"] = v == "true"
             if "channel" in mapping:
+                mapping.pop("trigger_axis", None)
                 button_map[button_key] = mapping
 
     if "HatMappings" in config:
@@ -180,6 +217,13 @@ def load_controller_config(config_path: str) -> Tuple[Optional[int], Dict, Dict,
 def _format_mapping_ini_value(mapping: Dict) -> str:
     inv = "true" if mapping.get("invert") else "false"
     return f"channel:{int(mapping['channel'])}, invert:{inv}"
+
+
+def _format_button_mapping_ini_value(mapping: Dict) -> str:
+    s = _format_mapping_ini_value(mapping)
+    if mapping.get("trigger"):
+        s += ", trigger:true"
+    return s
 
 
 def _mapping_ini_key_order(key: str) -> Tuple[Any, ...]:
@@ -226,7 +270,9 @@ def save_controller_config(
     axis_lines = [(k, _format_mapping_ini_value(axis_map[k])) for k in sorted(axis_map.keys(), key=_mapping_ini_key_order)]
     _rewrite_section("AxisMappings", axis_lines)
 
-    btn_lines = [(k, _format_mapping_ini_value(button_map[k])) for k in sorted(button_map.keys(), key=_mapping_ini_key_order)]
+    btn_lines = [
+        (k, _format_button_mapping_ini_value(button_map[k])) for k in sorted(button_map.keys(), key=_mapping_ini_key_order)
+    ]
     _rewrite_section("ButtonMappings", btn_lines)
 
     if cfg.has_section("HatMappings"):
