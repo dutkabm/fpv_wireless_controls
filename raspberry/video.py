@@ -6,8 +6,9 @@ No extra pip dependencies; uses the system camera stack on Pi OS Bookworm.
 Environment (optional):
 
 - ``BOX_CAMERA_STREAM_CMD`` — full command string (``shlex.split``); replaces the default argv.
+- ``BOX_CAMERA_STREAM_FORMAT`` — ``mpegts`` (default, VLC-friendly) or ``h264`` (raw; VLC: ``tcp/h264://``).
 - Otherwise: ``BOX_CAMERA_WIDTH``, ``BOX_CAMERA_HEIGHT``, ``BOX_CAMERA_FRAMERATE``,
-  ``BOX_CAMERA_STREAM_OUTPUT`` (default ``tcp://0.0.0.0:8888``).
+  ``BOX_CAMERA_STREAM_OUTPUT`` (default ``tcp://0.0.0.0:8888``; mpegts adds ``?listen=1``).
 """
 
 from __future__ import annotations
@@ -42,9 +43,6 @@ def _normalize_camera_error(raw: str) -> str:
     if "no cameras available" in low or "no camera available" in low:
         return (
             "No camera detected by libcamera.\n"
-            "• Pi: enable the camera in raspi-config (Interface Options → Camera)\n"
-            "• Check the CSI ribbon cable (camera module, not USB webcam by default)\n"
-            "• Reboot after enabling; run: rpicam-hello --list-cameras\n"
             "• USB webcam: set BOX_CAMERA_STREAM_CMD to an ffmpeg/v4l2 command"
         )
     if "command not found" in low or "no such file" in low:
@@ -52,7 +50,29 @@ def _normalize_camera_error(raw: str) -> str:
             "rpicam-vid / libcamera-vid not found.\n"
             "Install Pi OS camera apps or set BOX_CAMERA_STREAM_CMD to your stream command."
         )
+    if "failed to send" in low and "socket" in low:
+        return (
+            "Stream socket error (rpicam-vid).\n"
+            "• Turn Video ON on the Pi first, then open VLC within a few seconds\n"
+            "• Default (mpegts): Media → Open Network Stream → tcp://<pi-ip>:8888\n"
+            "• Raw H.264 (BOX_CAMERA_STREAM_FORMAT=h264): use tcp/h264://<pi-ip>:8888\n"
+            "• If VLC disconnects, toggle Video off/on on the Box tab (stream stops on disconnect)"
+        )
     return t[-1200:]
+
+
+def camera_stream_format() -> str:
+    """``mpegts`` (default) or ``h264`` — must match how the Pi streams and how VLC opens the URL."""
+    return os.environ.get("BOX_CAMERA_STREAM_FORMAT", "mpegts").strip().lower()
+
+
+def camera_stream_client_url(host: str, port: Optional[int] = None) -> str:
+    """VLC / ffplay URL for the current ``BOX_CAMERA_STREAM_FORMAT``."""
+    p = port if port is not None else camera_stream_tcp_port()
+    h = host.strip()
+    if camera_stream_format() == "h264":
+        return f"tcp/h264://{h}:{p}"
+    return f"tcp://{h}:{p}"
 
 
 def probe_cameras(timeout: float = 5.0) -> Tuple[bool, str]:
@@ -101,24 +121,26 @@ def _camera_stream_argv_from_env() -> List[str]:
     w = os.environ.get("BOX_CAMERA_WIDTH", "1280")
     h = os.environ.get("BOX_CAMERA_HEIGHT", "720")
     fps = os.environ.get("BOX_CAMERA_FRAMERATE", "30")
-    out = os.environ.get("BOX_CAMERA_STREAM_OUTPUT", "tcp://0.0.0.0:8888")
+    out = os.environ.get("BOX_CAMERA_STREAM_OUTPUT", "tcp://0.0.0.0:8888").strip()
+    fmt = camera_stream_format()
     argv = [
         vid,
         "-t",
         "0",
+        "-n",
         "--width",
         w,
         "--height",
         h,
         "--framerate",
         fps,
-        "--codec",
-        "h264",
-        "--inline",
-        "--listen",
-        "-o",
-        out,
     ]
+    if fmt == "h264":
+        argv.extend(["--codec", "h264", "--inline", "--listen", "-o", out])
+    else:
+        base = out.split("?", 1)[0]
+        listen_out = out if "listen" in out.lower() else f"{base}?listen=1"
+        argv.extend(["--codec", "libav", "--libav-format", "mpegts", "-o", listen_out])
     cam_idx = os.environ.get("BOX_CAMERA_INDEX", "").strip()
     if cam_idx:
         argv[1:1] = ["--camera", cam_idx]

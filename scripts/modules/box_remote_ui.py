@@ -286,15 +286,23 @@ class BoxRemotePanel:
         host = self._get_target_ip().strip()
         port = int(d.get("video_tcp_port") or 8888)
         cam_on = bool(d.get("camera_streaming"))
-        self._update_stream_hint(host, port, cam_on)
+        vfmt = str(d.get("video_stream_format") or "mpegts")
+        self._update_stream_hint(host, port, cam_on, vfmt)
 
-    def _update_stream_hint(self, host: str, video_port: int, cam_on: bool) -> None:
+    def _video_play_url(self, host: str, video_port: int, fmt: str) -> str:
+        if (fmt or "mpegts").lower() == "h264":
+            return f"tcp/h264://{host}:{video_port}"
+        return f"tcp://{host}:{video_port}"
+
+    def _update_stream_hint(self, host: str, video_port: int, cam_on: bool, fmt: str = "mpegts") -> None:
         if cam_on and host:
-            url = f"tcp://{host}:{video_port}"
+            url = self._video_play_url(host, video_port, fmt)
             self._last_stream_url = url
             self.stream_l.configure(
-                text=f"Stream URL (open in VLC): {url}\n"
-                "One client connects; Pi runs rpicam-vid with --listen on this port."
+                text=f"VLC → Open Network Stream:\n{url}\n"
+                "1. Turn Video ON here first (Pi waits for VLC)\n"
+                "2. Open the URL in VLC within ~10 s\n"
+                f"Format on Pi: {fmt or 'mpegts'} (mpegts recommended for Module 3)"
             )
             self.copy_url_b.configure(state="normal")
             self.vlc_b.configure(state="normal" if shutil.which("vlc") else "disabled")

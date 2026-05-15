@@ -35,10 +35,10 @@ from urllib.parse import urlparse
 
 if __package__:
     from .box_control import BoxController
-    from .video import camera_stream_tcp_port
+    from .video import camera_stream_format, camera_stream_tcp_port
 else:
     from box_control import BoxController
-    from video import camera_stream_tcp_port
+    from video import camera_stream_format, camera_stream_tcp_port
 
 _LOG = logging.getLogger(__name__)
 
@@ -137,6 +137,7 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
         st = box.read_system_status()
         d = asdict(st)
         d["video_tcp_port"] = camera_stream_tcp_port()
+        d["video_stream_format"] = camera_stream_format()
         d["hardware_ok"] = True
         d["sensors_ok"] = box.env is not None and box.batteries is not None
         g = box.gpio
