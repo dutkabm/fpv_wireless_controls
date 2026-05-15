@@ -45,16 +45,24 @@ class SystemStatus:
     drone_power_on: bool = False
     camera_streaming: bool = False
     camera_stream_error: Optional[str] = None
+    env_error: Optional[str] = None
+    battery_error: Optional[str] = None
 
     def refresh(self, box) -> None:
         """Pull sensors, ADC, output pin state, and camera stream state from a live box controller."""
         self.monotonic_s = time.monotonic()
-        self.sensor_kind = box.env.kind
-        t, rh, p = box.read_environment()
-        self.temperature_c = t
-        self.humidity_percent = rh
-        self.pressure_hpa = p
-        self.box_battery_v, self.drone_battery_v = box.batteries.read_both_v()
+        self.env_error = getattr(box, "env_error", None)
+        self.battery_error = getattr(box, "battery_error", None)
+        if box.env is not None:
+            self.sensor_kind = box.env.kind
+            t, rh, p = box.read_environment()
+            self.temperature_c = t
+            self.humidity_percent = rh
+            self.pressure_hpa = p
+        else:
+            self.sensor_kind = ""
+        if box.batteries is not None:
+            self.box_battery_v, self.drone_battery_v = box.batteries.read_both_v()
         self.led_on = box.gpio.led_is_on
         self.servo_active = box.gpio.servo_is_active
         self.servo_position = box.gpio.servo_position

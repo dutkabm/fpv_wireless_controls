@@ -344,6 +344,7 @@ class NetworkJoystickUI:
 
         box_tab = self.tabs.add("Box")
         box_tab.grid_columnconfigure(0, weight=1)
+        box_tab.grid_rowconfigure(0, weight=1)
 
         title = ctk.CTkLabel(
             joy_tab,
@@ -357,7 +358,7 @@ class NetworkJoystickUI:
         form.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(form, text="Target IP").grid(row=0, column=0, padx=(0, 8), pady=4, sticky="w")
-        self.ip_entry = ctk.CTkEntry(form, placeholder_text="IPv4 e.g. 192.168.1.10", width=280)
+        self.ip_entry = ctk.CTkEntry(form, placeholder_text="IPv4 e.g. 192.168.2.10", width=280)
         self.ip_entry.grid(row=0, column=1, padx=0, pady=4, sticky="ew")
         self.ip_entry.insert(0, args.target_ip.strip())
 
@@ -518,7 +519,6 @@ class NetworkJoystickUI:
             args=args,
             get_target_ip=lambda: self.ip_entry.get(),
         )
-
         self.send_var = ctk.StringVar(value="Start sending")
         self.send_btn = ctk.CTkButton(
             root,
@@ -531,7 +531,7 @@ class NetworkJoystickUI:
 
         self.hint = ctk.CTkLabel(
             root,
-            text="Connect · Map table CH1–16 · Trig on a button toggles that channel 1000/2000 on each press · --hz · Box tab = enclosure HTTP",
+            text="Connect · Map table CH1–16 · Trig on a button toggles that channel 1000/2000 on each press · --hz · Box tab = LED / servo / video",
             font=ctk.CTkFont(size=12),
             text_color="gray60",
         )

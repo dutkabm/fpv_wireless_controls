@@ -58,11 +58,9 @@ class BoxServerState:
         self.init_error: Optional[str] = None
 
     def get_box_locked(self) -> Tuple[Optional[BoxController], Optional[str]]:
-        """Call only with ``self.lock`` held."""
+        """Call only with ``self.lock`` held. Retries init each time until a box exists."""
         if self.box is not None:
             return self.box, None
-        if self.init_error is not None:
-            return None, self.init_error
         try:
             self.box = BoxController()
             self.init_error = None
@@ -139,7 +137,16 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
         st = box.read_system_status()
         d = asdict(st)
         d["video_tcp_port"] = camera_stream_tcp_port()
-        self._send_json(200, {"ok": True, "hardware_ok": True, **d})
+        d["hardware_ok"] = True
+        d["sensors_ok"] = box.env is not None and box.batteries is not None
+        g = box.gpio
+        if g.led_error:
+            d["led_error"] = g.led_error
+        if g.servo_error:
+            d["servo_error"] = g.servo_error
+        if g.drone_power_error:
+            d["drone_power_error"] = g.drone_power_error
+        self._send_json(200, {"ok": True, **d})
 
     def do_GET(self) -> None:
         if not _auth_ok(self):

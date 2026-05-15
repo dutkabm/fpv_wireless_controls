@@ -29,7 +29,7 @@ else:
 # export BOX_LED_PIN=18
 # export BOX_SERVO_PIN=12
 # export BOX_DRONE_POWER_PIN=16
-# export BOX_I2C_BUS=1
+# export BOX_I2C_BUS=1   # Linux device /dev/i2c-1 (enable I2C in raspi-config)
 
 
 def _i2c_bus_id() -> int:
@@ -37,11 +37,17 @@ def _i2c_bus_id() -> int:
 
 
 def _open_i2c():
-    import board
-    import busio
-
+    """Open the Pi hardware I2C controller by bus number (not GPIO bit-bang)."""
     bid = _i2c_bus_id()
-    return busio.I2C(board.SCL, board.SDA, frequency=400_000)
+    try:
+        from adafruit_extended_bus import ExtendedI2C
+
+        return ExtendedI2C(bid, frequency=400_000)
+    except ImportError:
+        import board
+        import busio
+
+        return busio.I2C(board.SCL, board.SDA, frequency=400_000)
 
 
 def _probe_bme280_or_bmp280(i2c):
@@ -142,7 +148,7 @@ class BatteryMonitor:
 
 
 class BoxOutputs:
-    """LED, servo, and drone power switching (gpiozero, BCM numbering)."""
+    """LED, servo, and drone power switching (gpiozero, BCM). Each output inits independently."""
 
     def __init__(
         self,
@@ -151,7 +157,12 @@ class BoxOutputs:
         drone_power_pin: Optional[int] = None,
         drone_power_active_high: bool = False,
     ):
-        from gpiozero import DigitalOutputDevice, Servo
+        self._led = None
+        self._servo = None
+        self._drone_power = None
+        self.led_error: Optional[str] = None
+        self.servo_error: Optional[str] = None
+        self.drone_power_error: Optional[str] = None
 
         self._led_pin = int(os.environ.get("BOX_LED_PIN", led_pin if led_pin is not None else 18))
         self._servo_pin = int(
@@ -163,47 +174,90 @@ class BoxOutputs:
                 drone_power_pin if drone_power_pin is not None else 16,
             )
         )
-        self._led = DigitalOutputDevice(self._led_pin, initial_value=False)
-        self._servo = Servo(self._servo_pin, min_pulse_width=1.0 / 1000, max_pulse_width=2.0 / 1000)
-        self._drone_power = DigitalOutputDevice(
-            self._drone_pin,
-            active_high=drone_power_active_high,
-            initial_value=not drone_power_active_high,
-        )
+
+        try:
+            from gpiozero import DigitalOutputDevice, Servo
+        except Exception as e:
+            msg = f"gpiozero unavailable: {e}"
+            self.led_error = msg
+            self.servo_error = msg
+            self.drone_power_error = msg
+            return
+
+        try:
+            self._led = DigitalOutputDevice(self._led_pin, initial_value=False)
+        except Exception as e:
+            self.led_error = str(e)
+
+        try:
+            self._servo = Servo(
+                self._servo_pin,
+                min_pulse_width=1.0 / 1000,
+                max_pulse_width=2.0 / 1000,
+            )
+        except Exception as e:
+            self.servo_error = str(e)
+
+        try:
+            self._drone_power = DigitalOutputDevice(
+                self._drone_pin,
+                active_high=drone_power_active_high,
+                initial_value=not drone_power_active_high,
+            )
+        except Exception as e:
+            self.drone_power_error = str(e)
 
     @property
     def led_is_on(self) -> bool:
-        return bool(self._led.value)
+        return bool(self._led.value) if self._led is not None else False
 
     @property
     def drone_power_is_on(self) -> bool:
-        return bool(self._drone_power.value)
+        return bool(self._drone_power.value) if self._drone_power is not None else False
 
     @property
     def servo_is_active(self) -> bool:
-        return self._servo.value is not None
+        return self._servo is not None and self._servo.value is not None
 
     @property
     def servo_position(self) -> Optional[float]:
+        if self._servo is None:
+            return None
         v = self._servo.value
         return None if v is None else float(v)
 
+    def _require_led(self):
+        if self._led is None:
+            raise RuntimeError(self.led_error or f"LED GPIO {self._led_pin} unavailable")
+
+    def _require_servo(self):
+        if self._servo is None:
+            raise RuntimeError(self.servo_error or f"servo GPIO {self._servo_pin} unavailable")
+
+    def _require_drone_power(self):
+        if self._drone_power is None:
+            raise RuntimeError(
+                self.drone_power_error or f"drone power GPIO {self._drone_pin} unavailable"
+            )
+
     def led_on(self) -> None:
+        self._require_led()
         self._led.on()
 
     def led_off(self) -> None:
+        self._require_led()
         self._led.off()
 
     def led_set(self, on: bool) -> None:
+        self._require_led()
         if on:
             self._led.on()
         else:
             self._led.off()
 
     def servo_start(self, position: Union[float, Literal["neutral"]] = "neutral") -> None:
-        """
-        Start driving the servo (PWM on). position: -1 … 1, or 'neutral' (0).
-        """
+        """Start driving the servo (PWM on). position: -1 … 1, or 'neutral' (0)."""
+        self._require_servo()
         if position == "neutral":
             self._servo.value = 0.0
         else:
@@ -211,15 +265,19 @@ class BoxOutputs:
 
     def servo_stop(self) -> None:
         """Stop PWM pulses (servo floats / unloaded)."""
+        self._require_servo()
         self._servo.detach()
 
     def drone_power_on(self) -> None:
+        self._require_drone_power()
         self._drone_power.on()
 
     def drone_power_off(self) -> None:
+        self._require_drone_power()
         self._drone_power.off()
 
     def drone_power_set(self, on: bool) -> None:
+        self._require_drone_power()
         if on:
             self._drone_power.on()
         else:
@@ -227,6 +285,8 @@ class BoxOutputs:
 
     def close(self) -> None:
         for dev in (self._led, self._servo, self._drone_power):
+            if dev is None:
+                continue
             try:
                 dev.close()
             except Exception:
@@ -234,7 +294,7 @@ class BoxOutputs:
 
 
 class BoxController:
-    """One I2C bus shared by environment sensor and ADC."""
+    """GPIO/camera outputs; I2C sensors (env + ADC) are optional if init fails."""
 
     def __init__(
         self,
@@ -243,38 +303,36 @@ class BoxController:
         drone_power_pin: Optional[int] = None,
         drone_power_active_high: bool = True,
     ):
-        self._i2c = _open_i2c()
-        env: Optional[EnvironmentSensor] = None
-        bat: Optional[BatteryMonitor] = None
-        gpio: Optional[BoxOutputs] = None
-        try:
-            env = EnvironmentSensor(self._i2c)
-            bat = BatteryMonitor(self._i2c)
-            gpio = BoxOutputs(
-                led_pin=led_pin,
-                servo_pin=servo_pin,
-                drone_power_pin=drone_power_pin,
-                drone_power_active_high=drone_power_active_high,
-            )
-        except Exception:
-            if gpio is not None:
-                gpio.close()
-            if bat is not None:
-                bat.deinit()
-            if env is not None:
-                env.deinit()
-            if self._i2c is not None:
-                try:
-                    self._i2c.deinit()
-                except Exception:
-                    pass
-                self._i2c = None
-            raise
-        assert env is not None and bat is not None and gpio is not None
-        self.env = env
-        self.batteries = bat
-        self.gpio = gpio
+        self.env: Optional[EnvironmentSensor] = None
+        self.batteries: Optional[BatteryMonitor] = None
+        self.env_error: Optional[str] = None
+        self.battery_error: Optional[str] = None
+        self._i2c = None
+
+        self.gpio = BoxOutputs(
+            led_pin=led_pin,
+            servo_pin=servo_pin,
+            drone_power_pin=drone_power_pin,
+            drone_power_active_high=drone_power_active_high,
+        )
         self.camera_stream = CameraStream()
+
+        try:
+            self._i2c = _open_i2c()
+        except Exception as e:
+            self.env_error = f"I2C: {e}"
+            self.battery_error = self.env_error
+            return
+
+        try:
+            self.env = EnvironmentSensor(self._i2c)
+        except Exception as e:
+            self.env_error = str(e)
+
+        try:
+            self.batteries = BatteryMonitor(self._i2c)
+        except Exception as e:
+            self.battery_error = str(e)
 
     def camera_stream_start(self) -> bool:
         """Start the Pi camera network stream (env vars: see ``raspberry.video`` module docstring)."""
@@ -285,21 +343,33 @@ class BoxController:
         self.camera_stream.stop()
 
     def read_temperature_c(self) -> float:
+        if self.env is None:
+            raise RuntimeError(self.env_error or "environment sensor unavailable")
         return self.env.read()[0]
 
     def read_humidity_percent(self) -> Optional[float]:
+        if self.env is None:
+            raise RuntimeError(self.env_error or "environment sensor unavailable")
         return self.env.read()[1]
 
     def read_pressure_hpa(self) -> float:
+        if self.env is None:
+            raise RuntimeError(self.env_error or "environment sensor unavailable")
         return self.env.read()[2]
 
     def read_environment(self) -> Tuple[float, Optional[float], float]:
+        if self.env is None:
+            raise RuntimeError(self.env_error or "environment sensor unavailable")
         return self.env.read()
 
     def read_box_battery_v(self) -> float:
+        if self.batteries is None:
+            raise RuntimeError(self.battery_error or "battery monitor unavailable")
         return self.batteries.read_box_battery_v()
 
     def read_drone_battery_v(self) -> float:
+        if self.batteries is None:
+            raise RuntimeError(self.battery_error or "battery monitor unavailable")
         return self.batteries.read_drone_battery_v()
 
     def read_system_status(self, into: Optional[SystemStatus] = None) -> SystemStatus:
@@ -311,8 +381,10 @@ class BoxController:
     def close(self) -> None:
         self.camera_stream.stop()
         self.gpio.close()
-        self.batteries.deinit()
-        self.env.deinit()
+        if self.batteries is not None:
+            self.batteries.deinit()
+        if self.env is not None:
+            self.env.deinit()
         if self._i2c is not None:
             try:
                 self._i2c.deinit()

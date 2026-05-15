@@ -33,13 +33,20 @@ class BoxRemotePanel:
         self.client: BoxRemoteClient | None = None
         self.poll_ms = max(500, int(getattr(args, "box_poll_ms", 1500)))
         self._poll_after_id: Optional[str] = None
+        self._last_status: dict[str, Any] = {}
 
         parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(0, weight=1)
+
+        scroll = ctk.CTkScrollableFrame(parent, label_text="Box enclosure (raspberry.box_server)")
+        scroll.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
+        scroll.grid_columnconfigure(0, weight=1)
+        panel = scroll
 
         row = 0
         ctk.CTkLabel(
-            parent,
-            text="Uses Target IP from the Joystick tab for box HTTP (raspberry.box_server).",
+            panel,
+            text="Uses Target IP from the Joystick tab for box HTTP.",
             wraplength=480,
             anchor="w",
             justify="left",
@@ -47,26 +54,26 @@ class BoxRemotePanel:
         ).grid(row=row, column=0, padx=12, pady=(12, 4), sticky="ew")
         row += 1
 
-        ctk.CTkLabel(parent, text="Box HTTP port").grid(row=row, column=0, padx=12, pady=(8, 2), sticky="w")
+        ctk.CTkLabel(panel, text="Box HTTP port").grid(row=row, column=0, padx=4, pady=(8, 2), sticky="w")
         row += 1
-        self.port_e = ctk.CTkEntry(parent, placeholder_text="50502")
+        self.port_e = ctk.CTkEntry(panel, placeholder_text="50502")
         self.port_e.insert(0, str(getattr(args, "box_http_port", 50502)))
-        self.port_e.grid(row=row, column=0, padx=12, pady=2, sticky="ew")
+        self.port_e.grid(row=row, column=0, padx=4, pady=2, sticky="ew")
         row += 1
 
-        ctk.CTkLabel(parent, text="Token (optional, BOX_HTTP_TOKEN on Pi)").grid(
-            row=row, column=0, padx=12, pady=(8, 2), sticky="w"
+        ctk.CTkLabel(panel, text="Token (optional, BOX_HTTP_TOKEN on Pi)").grid(
+            row=row, column=0, padx=4, pady=(8, 2), sticky="w"
         )
         row += 1
-        self.token_e = ctk.CTkEntry(parent, placeholder_text="secret", show="*")
+        self.token_e = ctk.CTkEntry(panel, placeholder_text="secret", show="*")
         tok = getattr(args, "box_http_token", "") or ""
         if tok:
             self.token_e.insert(0, tok)
-        self.token_e.grid(row=row, column=0, padx=12, pady=2, sticky="ew")
+        self.token_e.grid(row=row, column=0, padx=4, pady=2, sticky="ew")
         row += 1
 
-        btn_row = ctk.CTkFrame(parent, fg_color="transparent")
-        btn_row.grid(row=row, column=0, padx=12, pady=10, sticky="ew")
+        btn_row = ctk.CTkFrame(panel, fg_color="transparent")
+        btn_row.grid(row=row, column=0, padx=4, pady=10, sticky="ew")
         btn_row.grid_columnconfigure((0, 1), weight=1)
         self.connect_b = ctk.CTkButton(btn_row, text="Connect box", command=self._on_connect)
         self.connect_b.grid(row=0, column=0, padx=(0, 6), sticky="ew")
@@ -74,12 +81,33 @@ class BoxRemotePanel:
         self.disconnect_b.grid(row=0, column=1, padx=(6, 0), sticky="ew")
         row += 1
 
-        self.conn_l = ctk.CTkLabel(parent, text="Not connected", text_color="gray60")
-        self.conn_l.grid(row=row, column=0, padx=12, pady=(0, 6), sticky="w")
+        self.conn_l = ctk.CTkLabel(panel, text="Not connected", text_color="gray60")
+        self.conn_l.grid(row=row, column=0, padx=4, pady=(0, 6), sticky="w")
         row += 1
 
-        stat = ctk.CTkFrame(parent)
-        stat.grid(row=row, column=0, padx=12, pady=4, sticky="ew")
+        ctk.CTkLabel(panel, text="Controls", font=ctk.CTkFont(weight="bold")).grid(
+            row=row, column=0, padx=4, pady=(8, 4), sticky="w"
+        )
+        row += 1
+        ctl = ctk.CTkFrame(panel, fg_color="transparent")
+        ctl.grid(row=row, column=0, padx=4, pady=4, sticky="ew")
+        ctl.grid_columnconfigure((0, 1, 2), weight=1)
+        self.led_toggle_b = ctk.CTkButton(ctl, text="LED: off", command=self._toggle_led, state="disabled", height=36)
+        self.led_toggle_b.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
+        self.servo_toggle_b = ctk.CTkButton(
+            ctl, text="Servo: stop", command=self._toggle_servo, state="disabled", height=36
+        )
+        self.servo_toggle_b.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
+        self.cam_toggle_b = ctk.CTkButton(ctl, text="Video: off", command=self._toggle_cam, state="disabled", height=36)
+        self.cam_toggle_b.grid(row=0, column=2, padx=4, pady=4, sticky="ew")
+        row += 1
+
+        ctk.CTkLabel(panel, text="Status", font=ctk.CTkFont(weight="bold")).grid(
+            row=row, column=0, padx=4, pady=(12, 4), sticky="w"
+        )
+        row += 1
+        stat = ctk.CTkFrame(panel)
+        stat.grid(row=row, column=0, padx=4, pady=4, sticky="ew")
         stat.grid_columnconfigure(1, weight=1)
         row += 1
         self._status_labels: dict[str, ctk.CTkLabel] = {}
@@ -102,53 +130,21 @@ class BoxRemotePanel:
             lab.grid(row=i, column=1, padx=8, pady=2, sticky="ew")
             self._status_labels[key] = lab
 
-        row += 1
-        ctk.CTkLabel(parent, text="Controls (Pi hardware must be OK)").grid(
-            row=row, column=0, padx=12, pady=(14, 4), sticky="w"
-        )
-        row += 1
-        ctl = ctk.CTkFrame(parent, fg_color="transparent")
-        ctl.grid(row=row, column=0, padx=12, pady=4, sticky="ew")
-        ctl.grid_columnconfigure((0, 1), weight=1)
-        self.led_on_b = ctk.CTkButton(ctl, text="LED on", command=lambda: self._led(True), state="disabled")
-        self.led_on_b.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
-        self.led_off_b = ctk.CTkButton(ctl, text="LED off", command=lambda: self._led(False), state="disabled")
-        self.led_off_b.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
-        row += 1
-
-        ctl2 = ctk.CTkFrame(parent, fg_color="transparent")
-        ctl2.grid(row=row, column=0, padx=12, pady=4, sticky="ew")
-        ctl2.grid_columnconfigure((0, 1), weight=1)
-        self.servo_on_b = ctk.CTkButton(ctl2, text="Servo start", command=self._servo_on, state="disabled")
-        self.servo_on_b.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
-        self.servo_off_b = ctk.CTkButton(ctl2, text="Servo stop", command=self._servo_off, state="disabled")
-        self.servo_off_b.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
-        row += 1
-
-        ctl3 = ctk.CTkFrame(parent, fg_color="transparent")
-        ctl3.grid(row=row, column=0, padx=12, pady=4, sticky="ew")
-        ctl3.grid_columnconfigure((0, 1), weight=1)
-        self.cam_on_b = ctk.CTkButton(ctl3, text="Camera start (Pi)", command=lambda: self._cam(True), state="disabled")
-        self.cam_on_b.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
-        self.cam_off_b = ctk.CTkButton(ctl3, text="Camera stop (Pi)", command=lambda: self._cam(False), state="disabled")
-        self.cam_off_b.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
-        row += 1
-
-        ctk.CTkLabel(parent, text="Video (VLC → Open Network Stream)").grid(
-            row=row, column=0, padx=12, pady=(12, 2), sticky="w"
+        ctk.CTkLabel(panel, text="Video (VLC → Open Network Stream)").grid(
+            row=row, column=0, padx=4, pady=(12, 2), sticky="w"
         )
         row += 1
         self.stream_l = ctk.CTkLabel(
-            parent,
+            panel,
             text="Connect and start the camera on the Pi to get a tcp:// URL.",
             wraplength=520,
             anchor="w",
             justify="left",
         )
-        self.stream_l.grid(row=row, column=0, padx=12, pady=2, sticky="ew")
+        self.stream_l.grid(row=row, column=0, padx=4, pady=2, sticky="ew")
         row += 1
-        vid = ctk.CTkFrame(parent, fg_color="transparent")
-        vid.grid(row=row, column=0, padx=12, pady=6, sticky="ew")
+        vid = ctk.CTkFrame(panel, fg_color="transparent")
+        vid.grid(row=row, column=0, padx=4, pady=6, sticky="ew")
         vid.grid_columnconfigure((0, 1), weight=1)
         self.copy_url_b = ctk.CTkButton(vid, text="Copy stream URL", command=self._copy_stream_url, state="disabled")
         self.copy_url_b.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
@@ -156,6 +152,26 @@ class BoxRemotePanel:
         self.vlc_b.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
 
         self._last_stream_url = ""
+
+    def auto_connect(self, *, quiet: bool = False) -> bool:
+        """Connect to box HTTP using Joystick tab Target IP (no dialog if ``quiet``)."""
+        if self.client is not None:
+            return True
+        c = self._make_client()
+        if c is None:
+            return False
+        d = c.get_status()
+        if not d.get("ok"):
+            if not quiet:
+                tk_messagebox.showerror("Box", d.get("error", "Request failed"), parent=self._root)
+            return False
+        self.client = c
+        self.connect_b.configure(state="disabled")
+        self.disconnect_b.configure(state="normal")
+        self._apply_status(d)
+        self._set_controls_enabled(True)
+        self._schedule_poll()
+        return True
 
     def _parse_port(self) -> int:
         try:
@@ -179,19 +195,11 @@ class BoxRemotePanel:
         return BoxRemoteClient(host, self._parse_port(), token=tok, timeout=self._timeout())
 
     def _on_connect(self) -> None:
-        c = self._make_client()
-        if c is None:
-            return
-        d = c.get_status()
-        if not d.get("ok"):
-            tk_messagebox.showerror("Box", d.get("error", "Request failed"), parent=self._root)
-            return
-        self.client = c
-        self.connect_b.configure(state="disabled")
-        self.disconnect_b.configure(state="normal")
-        self._apply_status(d)
-        self._set_controls_enabled(d.get("hardware_ok") is True)
-        self._schedule_poll()
+        self.auto_connect(quiet=False)
+
+    def disconnect(self) -> None:
+        """Stop polling and clear box HTTP session."""
+        self._on_disconnect()
 
     def _on_disconnect(self) -> None:
         if self._poll_after_id is not None:
@@ -201,10 +209,12 @@ class BoxRemotePanel:
                 pass
             self._poll_after_id = None
         self.client = None
+        self._last_status = {}
         self.connect_b.configure(state="normal")
         self.disconnect_b.configure(state="disabled")
         self.conn_l.configure(text="Not connected", text_color="gray60")
         self._set_controls_enabled(False)
+        self._sync_toggle_buttons({})
         self._last_stream_url = ""
         self.stream_l.configure(text="Connect and start the camera on the Pi to get a tcp:// URL.")
         self.copy_url_b.configure(state="disabled")
@@ -212,7 +222,7 @@ class BoxRemotePanel:
 
     def shutdown(self) -> None:
         """Stop polling (e.g. window close)."""
-        self._on_disconnect()
+        self.disconnect()
 
     def _schedule_poll(self) -> None:
         if self.client is None:
@@ -228,24 +238,33 @@ class BoxRemotePanel:
                 self._on_disconnect()
                 return
             self._apply_status(d)
-            self._set_controls_enabled(d.get("hardware_ok") is True)
+            self._set_controls_enabled(True)
             self._poll_after_id = self._root.after(self.poll_ms, tick)
 
         self._poll_after_id = self._root.after(self.poll_ms, tick)
 
     def _apply_status(self, d: dict) -> None:
+        if d.get("ok"):
+            self._last_status = d
+        self._sync_toggle_buttons(d)
         if not d.get("ok"):
             self.conn_l.configure(text=d.get("error", "error"), text_color="orange")
             return
         if not d.get("hardware_ok"):
-            err = d.get("hardware_error", "hardware unavailable")
-            self.conn_l.configure(text=f"HTTP OK — hardware: {err}", text_color="orange")
-            for key, lab in self._status_labels.items():
-                lab.configure(text="—")
-            self._update_stream_hint("", 8888, False)
+            err = d.get("hardware_error", "box unavailable")
+            self.conn_l.configure(text=f"HTTP OK — {err}", text_color="orange")
             return
 
-        self.conn_l.configure(text="Connected — hardware OK", text_color="#2fa572")
+        if d.get("sensors_ok") is False:
+            parts = []
+            if d.get("env_error"):
+                parts.append(f"env: {d['env_error']}")
+            if d.get("battery_error"):
+                parts.append(f"ADC: {d['battery_error']}")
+            hint = "; ".join(parts) if parts else "sensors unavailable"
+            self.conn_l.configure(text=f"Connected — controls OK ({hint})", text_color="#c9a227")
+        else:
+            self.conn_l.configure(text="Connected", text_color="#2fa572")
 
         def fmt_val(key: str, v) -> str:
             if v is None:
@@ -289,22 +308,65 @@ class BoxRemotePanel:
 
     def _set_controls_enabled(self, on: bool) -> None:
         st = "normal" if on else "disabled"
-        for b in (
-            self.led_on_b,
-            self.led_off_b,
-            self.servo_on_b,
-            self.servo_off_b,
-            self.cam_on_b,
-            self.cam_off_b,
-        ):
+        for b in (self.led_toggle_b, self.servo_toggle_b, self.cam_toggle_b):
             b.configure(state=st)
+
+    def _toggle_on_color(self) -> tuple[str, str]:
+        return "seagreen", "darkgreen"
+
+    def _toggle_off_color(self) -> tuple[str, str]:
+        return "gray40", "gray35"
+
+    def _sync_toggle_buttons(self, d: dict) -> None:
+        led_on = bool(d.get("led_on"))
+        servo_on = bool(d.get("servo_active"))
+        cam_on = bool(d.get("camera_streaming"))
+        pairs = (
+            (self.led_toggle_b, f"LED: {'on' if led_on else 'off'}", led_on),
+            (self.servo_toggle_b, f"Servo: {'run' if servo_on else 'stop'}", servo_on),
+            (self.cam_toggle_b, f"Video: {'on' if cam_on else 'off'}", cam_on),
+        )
+        for btn, text, active in pairs:
+            fg, hover = self._toggle_on_color() if active else self._toggle_off_color()
+            btn.configure(text=text, fg_color=fg, hover_color=hover)
+
+    def _toggle_led(self) -> None:
+        if self.client is None:
+            return
+        on = not bool(self._last_status.get("led_on"))
+        self._led(on)
+
+    def _toggle_servo(self) -> None:
+        if self.client is None:
+            return
+        if bool(self._last_status.get("servo_active")):
+            self._servo_off()
+        else:
+            self._servo_on()
+
+    def _toggle_cam(self) -> None:
+        if self.client is None:
+            return
+        on = not bool(self._last_status.get("camera_streaming"))
+        self._cam(on)
+
+    def _command_error_text(self, d: dict, fallback: str) -> str:
+        parts = [d.get("error"), d.get("hardware_error")]
+        if d.get("led_error"):
+            parts.append(f"LED: {d['led_error']}")
+        msg = "\n".join(p for p in parts if p)
+        return msg or fallback
 
     def _led(self, on: bool) -> None:
         if self.client is None:
             return
         d = self.client.set_led(on)
         if not d.get("ok"):
-            tk_messagebox.showerror("Box", d.get("error", "LED command failed"), parent=self._root)
+            tk_messagebox.showerror(
+                "Box",
+                self._command_error_text(d, "LED command failed"),
+                parent=self._root,
+            )
             return
         self._apply_status(d)
 
@@ -313,7 +375,11 @@ class BoxRemotePanel:
             return
         d = self.client.set_servo(True, "neutral")
         if not d.get("ok"):
-            tk_messagebox.showerror("Box", d.get("error", "Servo command failed"), parent=self._root)
+            tk_messagebox.showerror(
+                "Box",
+                self._command_error_text(d, "Servo command failed"),
+                parent=self._root,
+            )
             return
         self._apply_status(d)
 
@@ -322,7 +388,11 @@ class BoxRemotePanel:
             return
         d = self.client.set_servo(False)
         if not d.get("ok"):
-            tk_messagebox.showerror("Box", d.get("error", "Servo command failed"), parent=self._root)
+            tk_messagebox.showerror(
+                "Box",
+                self._command_error_text(d, "Servo command failed"),
+                parent=self._root,
+            )
             return
         self._apply_status(d)
 

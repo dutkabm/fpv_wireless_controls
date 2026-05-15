@@ -161,7 +161,7 @@ def _interface_ipv4_from_os() -> List[str]:
 
 
 def _local_non_loopback_ipv4() -> List[str]:
-    """Best-effort list of this host's IPv4 addresses (no 127.0.0.0/8)."""
+    """IPv4 on local NICs (ifconfig/ip) plus default-route source — no hostname/VPN aliases."""
     seen: set[str] = set()
     out: List[str] = []
 
@@ -176,11 +176,8 @@ def _local_non_loopback_ipv4() -> List[str]:
         seen.add(ip)
         out.append(ip)
 
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_DGRAM):
-            add(info[4][0])
-    except OSError:
-        pass
+    for ip in _interface_ipv4_from_os():
+        add(ip)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.settimeout(0.2)
@@ -190,13 +187,11 @@ def _local_non_loopback_ipv4() -> List[str]:
         pass
     finally:
         s.close()
-    for ip in _interface_ipv4_from_os():
-        add(ip)
     return out
 
 
 def _scan_network_hosts(netmask: str) -> Tuple[List[str], str]:
-    """Build ordered unique host IPs to probe from local IPv4 + netmask (one subnet per local interface)."""
+    """Build ordered host IPs to probe from local NIC subnets."""
     nm, err = validate_ipv4_netmask(netmask)
     if nm is None:
         return [], err
@@ -231,9 +226,9 @@ def scan_tx_bridges(
     handshake_port: int,
     netmask: str,
     *,
-    probe_timeout: float = 0.22,
+    probe_timeout: float = 0.35,
     max_workers: int = 48,
-    max_hosts: int = 1024,
+    max_hosts: int = 2048,
 ) -> Tuple[List[Tuple[str, str]], str]:
     """TCP-probe each host on derived subnet(s) for a bridge handshake.
 

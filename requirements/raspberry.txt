@@ -1,5 +1,8 @@
 # Pi: box_control / models / video / box_server (stdlib HTTP; optional system rpicam-vid)
+# Blinka imports RPi.GPIO on Pi when opening I2C via `import board`
+RPi.GPIO>=0.7.1
 adafruit-blinka>=8.20.0
+adafruit-extended-bus>=1.0.2
 adafruit-circuitpython-bme280>=2.6.0
 adafruit-circuitpython-bmp280>=3.2.0
 adafruit-circuitpython-ads1x15>=2.2.0

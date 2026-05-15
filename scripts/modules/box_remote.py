@@ -51,9 +51,12 @@ class BoxRemoteClient:
         except urllib.error.HTTPError as e:
             raw = e.read().decode(errors="replace")
             try:
-                return json.loads(raw)
+                out = json.loads(raw)
             except json.JSONDecodeError:
-                return {"ok": False, "error": raw or str(e)}
+                out = {"ok": False, "error": raw or str(e)}
+            if isinstance(out, dict) and "error" not in out:
+                out["error"] = out.get("hardware_error") or raw or str(e)
+            return out
         except urllib.error.URLError as e:
             reason = getattr(e, "reason", None)
             return {"ok": False, "error": str(reason) if reason else str(e)}
