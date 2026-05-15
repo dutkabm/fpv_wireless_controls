@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 from typing import Any, Callable, Optional
 
 import customtkinter as ctk
@@ -153,6 +155,26 @@ class BoxRemotePanel:
 
         self._last_stream_url = ""
 
+    @staticmethod
+    def _find_vlc() -> Optional[str]:
+        """``vlc`` on PATH, or default install locations (macOS .app, Windows Program Files)."""
+        for name in ("vlc", "VLC", "cvlc"):
+            path = shutil.which(name)
+            if path:
+                return path
+        if sys.platform == "darwin":
+            mac_vlc = "/Applications/VLC.app/Contents/MacOS/VLC"
+            if os.path.isfile(mac_vlc) and os.access(mac_vlc, os.X_OK):
+                return mac_vlc
+        if sys.platform == "win32":
+            for candidate in (
+                os.path.expandvars(r"%ProgramFiles%\VideoLAN\VLC\vlc.exe"),
+                os.path.expandvars(r"%ProgramFiles(x86)%\VideoLAN\VLC\vlc.exe"),
+            ):
+                if os.path.isfile(candidate):
+                    return candidate
+        return None
+
     def auto_connect(self, *, quiet: bool = False) -> bool:
         """Connect to box HTTP using Joystick tab Target IP (no dialog if ``quiet``)."""
         if self.client is not None:
@@ -295,21 +317,28 @@ class BoxRemotePanel:
         return f"tcp://{host}:{video_port}"
 
     def _update_stream_hint(self, host: str, video_port: int, cam_on: bool, fmt: str = "mpegts") -> None:
-        if cam_on and host:
+        host = host.strip()
+        if host and self.client is not None:
             url = self._video_play_url(host, video_port, fmt)
             self._last_stream_url = url
+            vlc_path = self._find_vlc()
+            cam_line = "Stream active — open VLC now." if cam_on else "Turn Video ON, then Try VLC within ~10 s."
+            vlc_line = (
+                "Try VLC uses low network caching (~150 ms)."
+                if vlc_path
+                else "VLC not found — install VLC or use Copy stream URL in VLC manually."
+            )
             self.stream_l.configure(
                 text=f"VLC → Open Network Stream:\n{url}\n"
-                "1. Turn Video ON here first (Pi waits for VLC)\n"
-                "2. Open the URL in VLC within ~10 s\n"
-                f"Format on Pi: {fmt or 'mpegts'} (mpegts recommended for Module 3)"
+                f"{cam_line}\n{vlc_line}\n"
+                f"Format: {fmt or 'mpegts'} · Pi default 640×480 @ 25 fps"
             )
             self.copy_url_b.configure(state="normal")
-            self.vlc_b.configure(state="normal" if shutil.which("vlc") else "disabled")
+            self.vlc_b.configure(state="normal" if vlc_path else "disabled")
         else:
             self._last_stream_url = ""
             self.stream_l.configure(
-                text="Start the camera on the Pi, then use Copy / VLC with the tcp:// URL."
+                text="Connect box, then turn Video ON. Copy / Try VLC use the Pi Target IP."
             )
             self.copy_url_b.configure(state="disabled")
             self.vlc_b.configure(state="disabled")
@@ -426,16 +455,40 @@ class BoxRemotePanel:
 
     def _try_vlc(self) -> None:
         if not self._last_stream_url:
+            tk_messagebox.showinfo(
+                "Box",
+                "Connect box and set Target IP on the Joystick tab first.",
+                parent=self._root,
+            )
             return
-        vlc = shutil.which("vlc")
+        if not self._last_status.get("camera_streaming"):
+            tk_messagebox.showinfo(
+                "Box",
+                "Turn Video ON first so the Pi starts rpicam-vid, then Try VLC again.",
+                parent=self._root,
+            )
+            return
+        vlc = self._find_vlc()
         if not vlc:
             tk_messagebox.showinfo(
                 "Box",
-                "VLC not found in PATH. Install VLC or paste the URL manually.",
+                "VLC not found. Install from https://www.videolan.org/\n"
+                "macOS: /Applications/VLC.app\n"
+                "Or paste the URL via Copy stream URL → VLC Open Network Stream.",
                 parent=self._root,
             )
             return
         try:
-            subprocess.Popen([vlc, self._last_stream_url], start_new_session=True)
+            subprocess.Popen(
+                [
+                    vlc,
+                    "--network-caching=150",
+                    "--live-caching=150",
+                    "--clock-jitter=0",
+                    "--clock-synchro=0",
+                    self._last_stream_url,
+                ],
+                start_new_session=True,
+            )
         except OSError as e:
             tk_messagebox.showerror("Box", str(e), parent=self._root)

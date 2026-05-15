@@ -8,6 +8,8 @@ Environment (optional):
 - ``BOX_CAMERA_STREAM_CMD`` — full command string (``shlex.split``); replaces the default argv.
 - ``BOX_CAMERA_STREAM_FORMAT`` — ``mpegts`` (default, VLC-friendly) or ``h264`` (raw; VLC: ``tcp/h264://``).
 - Otherwise: ``BOX_CAMERA_WIDTH``, ``BOX_CAMERA_HEIGHT``, ``BOX_CAMERA_FRAMERATE``,
+  ``BOX_CAMERA_BITRATE`` (default ``2500000``), ``BOX_CAMERA_INTRA`` (default ``15``),
+  ``BOX_CAMERA_LOW_LATENCY`` (default ``1`` → ``--low-latency`` for mpegts),
   ``BOX_CAMERA_STREAM_OUTPUT`` (default ``tcp://0.0.0.0:8888``; mpegts adds ``?listen=1``).
 """
 
@@ -75,6 +77,25 @@ def camera_stream_client_url(host: str, port: Optional[int] = None) -> str:
     return f"tcp://{h}:{p}"
 
 
+def vlc_low_latency_args() -> List[str]:
+    """Extra VLC CLI flags to cut buffering (use with ``Try VLC`` or manual launch)."""
+    cache = os.environ.get("BOX_VLC_NETWORK_CACHING_MS", "150").strip() or "150"
+    return [
+        f"--network-caching={cache}",
+        f"--live-caching={cache}",
+        "--clock-jitter=0",
+        "--clock-synchro=0",
+    ]
+
+
+def _low_latency_enabled() -> bool:
+    return os.environ.get("BOX_CAMERA_LOW_LATENCY", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
 def probe_cameras(timeout: float = 5.0) -> Tuple[bool, str]:
     """
     Return (True, "") if a libcamera camera appears available, else (False, message).
@@ -118,9 +139,11 @@ def _camera_stream_argv_from_env() -> List[str]:
     vid = _camera_vid_binary()
     if vid is None:
         raise FileNotFoundError("rpicam-vid and libcamera-vid not found in PATH")
-    w = os.environ.get("BOX_CAMERA_WIDTH", "1280")
-    h = os.environ.get("BOX_CAMERA_HEIGHT", "720")
-    fps = os.environ.get("BOX_CAMERA_FRAMERATE", "30")
+    w = os.environ.get("BOX_CAMERA_WIDTH", "640")
+    h = os.environ.get("BOX_CAMERA_HEIGHT", "480")
+    fps = os.environ.get("BOX_CAMERA_FRAMERATE", "25")
+    bitrate = os.environ.get("BOX_CAMERA_BITRATE", "2500000")
+    intra = os.environ.get("BOX_CAMERA_INTRA", "15")
     out = os.environ.get("BOX_CAMERA_STREAM_OUTPUT", "tcp://0.0.0.0:8888").strip()
     fmt = camera_stream_format()
     argv = [
@@ -134,6 +157,10 @@ def _camera_stream_argv_from_env() -> List[str]:
         h,
         "--framerate",
         fps,
+        "--bitrate",
+        bitrate,
+        "--intra",
+        intra,
     ]
     if fmt == "h264":
         argv.extend(["--codec", "h264", "--inline", "--listen", "-o", out])
@@ -141,6 +168,8 @@ def _camera_stream_argv_from_env() -> List[str]:
         base = out.split("?", 1)[0]
         listen_out = out if "listen" in out.lower() else f"{base}?listen=1"
         argv.extend(["--codec", "libav", "--libav-format", "mpegts", "-o", listen_out])
+        if _low_latency_enabled():
+            argv.append("--low-latency")
     cam_idx = os.environ.get("BOX_CAMERA_INDEX", "").strip()
     if cam_idx:
         argv[1:1] = ["--camera", cam_idx]
