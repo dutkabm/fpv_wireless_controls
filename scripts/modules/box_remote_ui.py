@@ -351,7 +351,7 @@ class BoxRemotePanel:
         self._cam(on)
 
     def _command_error_text(self, d: dict, fallback: str) -> str:
-        parts = [d.get("error"), d.get("hardware_error")]
+        parts = [d.get("error"), d.get("hardware_error"), d.get("camera_stream_error")]
         if d.get("led_error"):
             parts.append(f"LED: {d['led_error']}")
         msg = "\n".join(p for p in parts if p)
@@ -401,7 +401,11 @@ class BoxRemotePanel:
             return
         d = self.client.set_camera_streaming(streaming)
         if not d.get("ok"):
-            tk_messagebox.showerror("Box", d.get("error", "Camera command failed"), parent=self._root)
+            tk_messagebox.showerror(
+                "Box",
+                self._command_error_text(d, "Camera command failed"),
+                parent=self._root,
+            )
             return
         self._apply_status(d)
 

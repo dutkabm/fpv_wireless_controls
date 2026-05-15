@@ -13,10 +13,81 @@ Environment (optional):
 from __future__ import annotations
 
 import os
+import re
 import shlex
+import shutil
 import subprocess
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
+
+
+def _which_camera_tool(*names: str) -> Optional[str]:
+    for name in names:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def _camera_vid_binary() -> Optional[str]:
+    """``rpicam-vid`` (Bookworm) or ``libcamera-vid`` (older libcamera apps)."""
+    return _which_camera_tool("rpicam-vid", "libcamera-vid")
+
+
+def _normalize_camera_error(raw: str) -> str:
+    t = (raw or "").strip()
+    low = t.lower()
+    if not t:
+        return "Camera stream failed (no details from rpicam-vid)."
+    if "no cameras available" in low or "no camera available" in low:
+        return (
+            "No camera detected by libcamera.\n"
+            "• Pi: enable the camera in raspi-config (Interface Options → Camera)\n"
+            "• Check the CSI ribbon cable (camera module, not USB webcam by default)\n"
+            "• Reboot after enabling; run: rpicam-hello --list-cameras\n"
+            "• USB webcam: set BOX_CAMERA_STREAM_CMD to an ffmpeg/v4l2 command"
+        )
+    if "command not found" in low or "no such file" in low:
+        return (
+            "rpicam-vid / libcamera-vid not found.\n"
+            "Install Pi OS camera apps or set BOX_CAMERA_STREAM_CMD to your stream command."
+        )
+    return t[-1200:]
+
+
+def probe_cameras(timeout: float = 5.0) -> Tuple[bool, str]:
+    """
+    Return (True, "") if a libcamera camera appears available, else (False, message).
+    Skipped when BOX_CAMERA_SKIP_PROBE=1 or BOX_CAMERA_STREAM_CMD is set.
+    """
+    if os.environ.get("BOX_CAMERA_SKIP_PROBE", "").strip() in ("1", "true", "yes"):
+        return True, ""
+    if os.environ.get("BOX_CAMERA_STREAM_CMD", "").strip():
+        return True, ""
+    hello = _which_camera_tool("rpicam-hello", "libcamera-hello")
+    if hello is None:
+        return True, ""
+    try:
+        r = subprocess.run(
+            [hello, "--list-cameras"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        out = f"{r.stdout or ''}\n{r.stderr or ''}".strip()
+        low = out.lower()
+        if "no cameras available" in low or "no cameras found" in low:
+            return False, _normalize_camera_error(out)
+        # libcamera lists lines like "0 : imx219 [...]"
+        if re.search(r"^\s*\d+\s*:", out, re.MULTILINE):
+            return True, ""
+        if r.returncode != 0:
+            return False, _normalize_camera_error(out or f"{hello} exited {r.returncode}")
+    except subprocess.TimeoutExpired:
+        return False, f"{hello} timed out while listing cameras"
+    except OSError as e:
+        return False, str(e)
+    return True, ""
 
 
 def _camera_stream_argv_from_env() -> List[str]:
@@ -24,12 +95,15 @@ def _camera_stream_argv_from_env() -> List[str]:
     cmd = os.environ.get("BOX_CAMERA_STREAM_CMD", "").strip()
     if cmd:
         return shlex.split(cmd)
+    vid = _camera_vid_binary()
+    if vid is None:
+        raise FileNotFoundError("rpicam-vid and libcamera-vid not found in PATH")
     w = os.environ.get("BOX_CAMERA_WIDTH", "1280")
     h = os.environ.get("BOX_CAMERA_HEIGHT", "720")
     fps = os.environ.get("BOX_CAMERA_FRAMERATE", "30")
     out = os.environ.get("BOX_CAMERA_STREAM_OUTPUT", "tcp://0.0.0.0:8888")
-    return [
-        "rpicam-vid",
+    argv = [
+        vid,
         "-t",
         "0",
         "--width",
@@ -45,6 +119,10 @@ def _camera_stream_argv_from_env() -> List[str]:
         "-o",
         out,
     ]
+    cam_idx = os.environ.get("BOX_CAMERA_INDEX", "").strip()
+    if cam_idx:
+        argv[1:1] = ["--camera", cam_idx]
+    return argv
 
 
 def _drain_stderr(proc: subprocess.Popen) -> str:
@@ -90,7 +168,7 @@ class CameraStream:
         # Process ended; capture stderr once for diagnostics / status.
         if self._last_error is None:
             tail = _drain_stderr(proc)
-            self._last_error = tail or f"camera process exited (code {code})"
+            self._last_error = _normalize_camera_error(tail or f"camera process exited (code {code})")
         try:
             if proc.stderr:
                 proc.stderr.close()
@@ -104,7 +182,15 @@ class CameraStream:
         if self.is_running:
             return True
         self._last_error = None
-        argv = self._argv()
+        ok_probe, probe_err = probe_cameras()
+        if not ok_probe:
+            self._last_error = probe_err
+            return False
+        try:
+            argv = self._argv()
+        except (OSError, ValueError, FileNotFoundError) as e:
+            self._last_error = _normalize_camera_error(str(e))
+            return False
         try:
             self._proc = subprocess.Popen(
                 argv,
@@ -114,14 +200,16 @@ class CameraStream:
                 start_new_session=True,
             )
         except (OSError, ValueError) as e:
-            self._last_error = str(e)
+            self._last_error = _normalize_camera_error(str(e))
             self._proc = None
             return False
-        time.sleep(0.2)
+        time.sleep(0.45)
         if self._proc is not None and self._proc.poll() is not None:
             tail = _drain_stderr(self._proc)
             code = self._proc.returncode
-            self._last_error = tail or f"camera process exited immediately (code {code})"
+            self._last_error = _normalize_camera_error(
+                tail or f"camera process exited immediately (code {code})"
+            )
             try:
                 if self._proc.stderr:
                     self._proc.stderr.close()

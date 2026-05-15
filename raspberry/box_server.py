@@ -221,7 +221,14 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
                         ok = box.camera_stream_start()
                         if not ok:
                             err_cam = box.camera_stream.last_error or "camera start failed"
-                            self._send_json(500, {"ok": False, "error": err_cam})
+                            self._send_json(
+                                500,
+                                {
+                                    "ok": False,
+                                    "error": err_cam,
+                                    "camera_stream_error": err_cam,
+                                },
+                            )
                             return
                     else:
                         box.camera_stream_stop()
