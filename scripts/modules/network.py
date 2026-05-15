@@ -5,8 +5,11 @@ from __future__ import annotations
 import concurrent.futures
 import ipaddress
 import logging
+import re
 import socket
 import struct
+import subprocess
+import sys
 from typing import List, Optional, Tuple
 
 # 16 channels × uint16 PWM-style microseconds-ish (1000–2000), same internal range as minirex_*.py
@@ -141,32 +144,54 @@ def validate_ipv4_netmask(text: str) -> Tuple[Optional[str], str]:
     return t, ""
 
 
+def _interface_ipv4_from_os() -> List[str]:
+    """IPv4 addresses on all local interfaces (includes USB bridge / secondary NICs)."""
+    try:
+        if sys.platform == "darwin":
+            text = subprocess.check_output(["ifconfig"], text=True, timeout=3)
+        else:
+            text = subprocess.check_output(
+                ["ip", "-o", "-4", "addr", "show"],
+                text=True,
+                timeout=3,
+            )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return re.findall(r"\binet (\d+\.\d+\.\d+\.\d+)\b", text)
+
+
 def _local_non_loopback_ipv4() -> List[str]:
     """Best-effort list of this host's IPv4 addresses (no 127.0.0.0/8)."""
     seen: set[str] = set()
     out: List[str] = []
+
+    def add(ip: str) -> None:
+        if ip.startswith("127.") or ip in seen:
+            return
+        try:
+            if ipaddress.IPv4Address(ip).is_loopback:
+                return
+        except ipaddress.AddressValueError:
+            return
+        seen.add(ip)
+        out.append(ip)
+
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_DGRAM):
-            ip = info[4][0]
-            if ip.startswith("127."):
-                continue
-            if ip not in seen:
-                seen.add(ip)
-                out.append(ip)
+            add(info[4][0])
     except OSError:
         pass
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.settimeout(0.2)
         s.connect(("192.0.2.1", 1))
-        ip = s.getsockname()[0]
-        if not ip.startswith("127.") and ip not in seen:
-            seen.add(ip)
-            out.append(ip)
+        add(s.getsockname()[0])
     except OSError:
         pass
     finally:
         s.close()
+    for ip in _interface_ipv4_from_os():
+        add(ip)
     return out
 
 
