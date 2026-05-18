@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
-import sys
 from typing import Any, Callable, Optional
 
 import customtkinter as ctk
@@ -13,10 +11,12 @@ import tkinter.messagebox as tk_messagebox
 
 from modules.box_remote import BoxRemoteClient
 
+VIDEO_STREAM_PORT = 8888
+
 
 class BoxRemotePanel:
     """
-    Status poll + LED / servo / camera controls; video URL for VLC.
+    Status poll + LED / servo / camera controls; ffplay UDP viewer.
 
     ``get_target_ip`` should return the same IPv4 as the joystick bridge Target IP field.
     """
@@ -132,13 +132,13 @@ class BoxRemotePanel:
             lab.grid(row=i, column=1, padx=8, pady=2, sticky="ew")
             self._status_labels[key] = lab
 
-        ctk.CTkLabel(panel, text="Video (VLC → Open Network Stream)").grid(
+        ctk.CTkLabel(panel, text="Video (ffplay, UDP MPEG-TS)").grid(
             row=row, column=0, padx=4, pady=(12, 2), sticky="w"
         )
         row += 1
         self.stream_l = ctk.CTkLabel(
             panel,
-            text="Connect and start the camera on the Pi to get a tcp:// URL.",
+            text="Connect and start the camera on the Pi to get a ffplay command.",
             wraplength=520,
             anchor="w",
             justify="left",
@@ -148,32 +148,17 @@ class BoxRemotePanel:
         vid = ctk.CTkFrame(panel, fg_color="transparent")
         vid.grid(row=row, column=0, padx=4, pady=6, sticky="ew")
         vid.grid_columnconfigure((0, 1), weight=1)
-        self.copy_url_b = ctk.CTkButton(vid, text="Copy stream URL", command=self._copy_stream_url, state="disabled")
+        self.copy_url_b = ctk.CTkButton(vid, text="Copy ffplay cmd", command=self._copy_stream_url, state="disabled")
         self.copy_url_b.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
-        self.vlc_b = ctk.CTkButton(vid, text="Try VLC", command=self._try_vlc, state="disabled")
-        self.vlc_b.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
+        self.ffplay_b = ctk.CTkButton(vid, text="Try ffplay", command=self._try_ffplay, state="disabled")
+        self.ffplay_b.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
 
         self._last_stream_url = ""
+        self._last_ffplay_cmd = ""
 
     @staticmethod
-    def _find_vlc() -> Optional[str]:
-        """``vlc`` on PATH, or default install locations (macOS .app, Windows Program Files)."""
-        for name in ("vlc", "VLC", "cvlc"):
-            path = shutil.which(name)
-            if path:
-                return path
-        if sys.platform == "darwin":
-            mac_vlc = "/Applications/VLC.app/Contents/MacOS/VLC"
-            if os.path.isfile(mac_vlc) and os.access(mac_vlc, os.X_OK):
-                return mac_vlc
-        if sys.platform == "win32":
-            for candidate in (
-                os.path.expandvars(r"%ProgramFiles%\VideoLAN\VLC\vlc.exe"),
-                os.path.expandvars(r"%ProgramFiles(x86)%\VideoLAN\VLC\vlc.exe"),
-            ):
-                if os.path.isfile(candidate):
-                    return candidate
-        return None
+    def _find_ffplay() -> Optional[str]:
+        return shutil.which("ffplay")
 
     def auto_connect(self, *, quiet: bool = False) -> bool:
         """Connect to box HTTP using Joystick tab Target IP (no dialog if ``quiet``)."""
@@ -238,9 +223,10 @@ class BoxRemotePanel:
         self._set_controls_enabled(False)
         self._sync_toggle_buttons({})
         self._last_stream_url = ""
-        self.stream_l.configure(text="Connect and start the camera on the Pi to get a tcp:// URL.")
+        self.stream_l.configure(text="Connect and start the camera on the Pi to get a ffplay command.")
         self.copy_url_b.configure(state="disabled")
-        self.vlc_b.configure(state="disabled")
+        self.ffplay_b.configure(state="disabled")
+        self._last_ffplay_cmd = ""
 
     def shutdown(self) -> None:
         """Stop polling (e.g. window close)."""
@@ -306,42 +292,53 @@ class BoxRemotePanel:
             lab.configure(text=fmt_val(key, d.get(key)))
 
         host = self._get_target_ip().strip()
-        port = int(d.get("video_tcp_port") or 8888)
         cam_on = bool(d.get("camera_streaming"))
-        vfmt = str(d.get("video_stream_format") or "mpegts")
-        self._update_stream_hint(host, port, cam_on, vfmt)
+        self._update_stream_hint(host, cam_on)
 
-    def _video_play_url(self, host: str, video_port: int, fmt: str) -> str:
-        if (fmt or "mpegts").lower() == "h264":
-            return f"tcp/h264://{host}:{video_port}"
-        return f"tcp://{host}:{video_port}"
+    def _video_play_url(self) -> str:
+        return f"udp://@:{VIDEO_STREAM_PORT}"
 
-    def _update_stream_hint(self, host: str, video_port: int, cam_on: bool, fmt: str = "mpegts") -> None:
+    def _ffplay_command(self) -> str:
+        url = self._video_play_url()
+        return f"ffplay -fflags nobuffer -flags low_delay -framedrop -i {url}"
+
+    def _update_stream_hint(
+        self,
+        host: str,
+        cam_on: bool,
+    ) -> None:
         host = host.strip()
         if host and self.client is not None:
-            url = self._video_play_url(host, video_port, fmt)
+            url = self._video_play_url()
+            cmd = self._ffplay_command()
             self._last_stream_url = url
-            vlc_path = self._find_vlc()
-            cam_line = "Stream active — open VLC now." if cam_on else "Turn Video ON, then Try VLC within ~10 s."
-            vlc_line = (
-                "Try VLC uses low network caching (~150 ms)."
-                if vlc_path
-                else "VLC not found — install VLC or use Copy stream URL in VLC manually."
+            self._last_ffplay_cmd = cmd
+            ffplay_path = self._find_ffplay()
+            cam_line = (
+                "UDP stream active — Try ffplay or paste the command in a terminal."
+                if cam_on
+                else "Turn Video ON, then Try ffplay."
+            )
+            ffplay_line = (
+                "Try ffplay: nobuffer, low_delay, framedrop."
+                if ffplay_path
+                else "ffplay not on PATH — install ffmpeg, or Copy ffplay cmd."
             )
             self.stream_l.configure(
-                text=f"VLC → Open Network Stream:\n{url}\n"
-                f"{cam_line}\n{vlc_line}\n"
-                f"Format: {fmt or 'mpegts'} · Pi default 640×480 @ 25 fps"
+                text=f"{cmd}\n"
+                f"{cam_line}\n{ffplay_line}\n"
+                f"MPEG-TS · UDP unicast to this PC · Pi default 640×480 @ 25 fps"
             )
             self.copy_url_b.configure(state="normal")
-            self.vlc_b.configure(state="normal" if vlc_path else "disabled")
+            self.ffplay_b.configure(state="normal" if ffplay_path else "disabled")
         else:
             self._last_stream_url = ""
+            self._last_ffplay_cmd = ""
             self.stream_l.configure(
-                text="Connect box, then turn Video ON. Copy / Try VLC use the Pi Target IP."
+                text="Connect box, then turn Video ON. Copy / Try ffplay use the Pi Target IP."
             )
             self.copy_url_b.configure(state="disabled")
-            self.vlc_b.configure(state="disabled")
+            self.ffplay_b.configure(state="disabled")
 
     def _set_controls_enabled(self, on: bool) -> None:
         st = "normal" if on else "disabled"
@@ -447,13 +444,13 @@ class BoxRemotePanel:
         self._apply_status(d)
 
     def _copy_stream_url(self) -> None:
-        if not self._last_stream_url:
+        if not self._last_ffplay_cmd:
             return
         self._root.clipboard_clear()
-        self._root.clipboard_append(self._last_stream_url)
+        self._root.clipboard_append(self._last_ffplay_cmd)
         self._root.update()
 
-    def _try_vlc(self) -> None:
+    def _try_ffplay(self) -> None:
         if not self._last_stream_url:
             tk_messagebox.showinfo(
                 "Box",
@@ -464,28 +461,29 @@ class BoxRemotePanel:
         if not self._last_status.get("camera_streaming"):
             tk_messagebox.showinfo(
                 "Box",
-                "Turn Video ON first so the Pi starts rpicam-vid, then Try VLC again.",
+                "Turn Video ON first so the Pi starts rpicam-vid, then Try ffplay again.",
                 parent=self._root,
             )
             return
-        vlc = self._find_vlc()
-        if not vlc:
+        ffplay = self._find_ffplay()
+        if not ffplay:
             tk_messagebox.showinfo(
                 "Box",
-                "VLC not found. Install from https://www.videolan.org/\n"
-                "macOS: /Applications/VLC.app\n"
-                "Or paste the URL via Copy stream URL → VLC Open Network Stream.",
+                "ffplay not found. Install ffmpeg (ffplay is included).\n"
+                "Or use Copy ffplay cmd and run it in a terminal.",
                 parent=self._root,
             )
             return
         try:
             subprocess.Popen(
                 [
-                    vlc,
-                    "--network-caching=150",
-                    "--live-caching=150",
-                    "--clock-jitter=0",
-                    "--clock-synchro=0",
+                    ffplay,
+                    "-fflags",
+                    "nobuffer",
+                    "-flags",
+                    "low_delay",
+                    "-framedrop",
+                    "-i",
                     self._last_stream_url,
                 ],
                 start_new_session=True,

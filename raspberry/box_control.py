@@ -334,9 +334,9 @@ class BoxController:
         except Exception as e:
             self.battery_error = str(e)
 
-    def camera_stream_start(self) -> bool:
-        """Start the Pi camera network stream (env vars: see ``raspberry.video`` module docstring)."""
-        return self.camera_stream.start()
+    def camera_stream_start(self, client_host: Optional[str] = None) -> bool:
+        """Start the Pi camera UDP stream to ``client_host`` (ground-station IP)."""
+        return self.camera_stream.start(client_host)
 
     def camera_stream_stop(self) -> None:
         """Stop the Pi camera stream subprocess."""

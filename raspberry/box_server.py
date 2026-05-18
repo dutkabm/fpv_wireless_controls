@@ -15,7 +15,7 @@ Environment:
 Routes (JSON; path string constants in :mod:`raspberry.box_api_paths`):
 
 - ``GET /api/status`` — ``hardware_ok``, live fields from :class:`raspberry.models.SystemStatus`,
-  plus ``video_tcp_port`` for VLC / ffplay URLs.
+  (camera stream is UDP MPEG-TS on port 8888; see ``raspberry.video``).
 - ``POST /api/led`` — body ``{"on": true|false}``.
 - ``POST /api/servo`` — body ``{"active": true|false}`` (false detaches PWM).
 - ``POST /api/camera`` — body ``{"streaming": true|false}``.
@@ -35,10 +35,8 @@ from urllib.parse import urlparse
 
 if __package__:
     from .box_control import BoxController
-    from .video import camera_stream_format, camera_stream_tcp_port
 else:
     from box_control import BoxController
-    from video import camera_stream_format, camera_stream_tcp_port
 
 _LOG = logging.getLogger(__name__)
 
@@ -98,6 +96,15 @@ def _auth_ok(handler: BaseHTTPRequestHandler) -> bool:
     return False
 
 
+def _http_client_host(handler: BaseHTTPRequestHandler) -> str:
+    """Client IPv4/IPv6 from the TCP connection (used as UDP stream destination)."""
+    return handler.client_address[0]
+
+
+def _note_stream_client(box: BoxController, handler: BaseHTTPRequestHandler) -> None:
+    box.camera_stream.set_client_host(_http_client_host(handler))
+
+
 def _read_json_body(handler: BaseHTTPRequestHandler, max_len: int = 4096) -> Any:
     n = handler.headers.get("Content-Length")
     if not n:
@@ -136,8 +143,6 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
     def _write_status_ok(self, box: BoxController) -> None:
         st = box.read_system_status()
         d = asdict(st)
-        d["video_tcp_port"] = camera_stream_tcp_port()
-        d["video_stream_format"] = camera_stream_format()
         d["hardware_ok"] = True
         d["sensors_ok"] = box.env is not None and box.batteries is not None
         g = box.gpio
@@ -169,6 +174,7 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+            _note_stream_client(box, self)
             self._write_status_ok(box)
 
     def do_POST(self) -> None:
@@ -196,6 +202,7 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
                     {"ok": False, "hardware_ok": False, "hardware_error": err or "unknown"},
                 )
                 return
+            _note_stream_client(box, self)
             try:
                 if path == API_LED:
                     if "on" not in body:
@@ -219,7 +226,7 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
                         self._fail(400, "missing streaming")
                         return
                     if bool(body["streaming"]):
-                        ok = box.camera_stream_start()
+                        ok = box.camera_stream_start(_http_client_host(self))
                         if not ok:
                             err_cam = box.camera_stream.last_error or "camera start failed"
                             self._send_json(
