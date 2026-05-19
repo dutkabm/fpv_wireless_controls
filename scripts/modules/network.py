@@ -24,27 +24,35 @@ DEFAULT_HANDSHAKE_TCP_PORT = 50001
 HANDSHAKE_LINE = CHANNEL_PACKET_MAGIC + b"\n"
 HANDSHAKE_OK_LINE = b"OK\n"  # legacy; prefer format_handshake_ok()
 _HANDSHAKE_OK_MAX_NAME_BYTES = 128
+_HANDSHAKE_OK_MAX_TOKEN_BYTES = 128
 
-
-def format_handshake_ok(bridge_name: str) -> bytes:
-    """Build handshake reply: OK <sanitized_name>\\n (UTF-8)."""
+def format_handshake_ok(bridge_name: str, box_token: str = "") -> bytes:
+    """Build handshake reply: OK <sanitized_name> [<box_token>]\\n (UTF-8)."""
     n = (bridge_name or "").replace("\r", "").replace("\n", "").replace("\x00", "").strip()
     if not n:
         n = "bridge"
     encoded = n.encode("utf-8", errors="replace")[:_HANDSHAKE_OK_MAX_NAME_BYTES]
+    tok = (box_token or "").replace("\r", "").replace("\n", "").replace("\x00", "").strip()
+    if tok:
+        tok_b = tok.encode("utf-8", errors="replace")[:_HANDSHAKE_OK_MAX_TOKEN_BYTES]
+        return b"OK " + encoded + b" " + tok_b + b"\n"
     return b"OK " + encoded + b"\n"
 
 
-def parse_handshake_response(resp: bytes) -> tuple[bool, str]:
-    """If first line is OK or OK <name>, return (True, bridge_name_or_empty). Else (False, '')."""
+def parse_handshake_response(resp: bytes) -> tuple[bool, str, str]:
+    """If first line is OK or OK <name> [<box_token>], return (True, name, token). Else (False, '', '')."""
     if not resp:
-        return False, ""
+        return False, "", ""
     first = resp.split(b"\n", 1)[0].strip()
     if first == b"OK":
-        return True, ""
+        return True, "", ""
     if first.startswith(b"OK "):
-        return True, first[3:].decode("utf-8", errors="replace")
-    return False, ""
+        rest = first[3:].decode("utf-8", errors="replace")
+        parts = rest.split(None, 1)
+        name = parts[0] if parts else ""
+        token = parts[1] if len(parts) > 1 else ""
+        return True, name, token
+    return False, "", ""
 
 
 def pack_channel_datagram(channels_1000_2000: List[int]) -> bytes:
@@ -82,8 +90,8 @@ def tcp_handshake(
     timeout: float = 5.0,
     *,
     quiet: bool = False,
-) -> Tuple[bool, str, str]:
-    """Connect to the bridge TCP port, send HANDSHAKE_LINE, expect OK response (optional bridge name)."""
+) -> Tuple[bool, str, str, str]:
+    """Connect to the bridge TCP port, send HANDSHAKE_LINE, expect OK (+ optional name and box token)."""
     if not quiet:
         _LOG.info("TCP handshake: connecting to %s:%s", host, tcp_port)
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -92,7 +100,7 @@ def tcp_handshake(
         s.connect((host, tcp_port))
         s.sendall(HANDSHAKE_LINE)
         resp = s.recv(64)
-        ok, bridge_name = parse_handshake_response(resp)
+        ok, bridge_name, box_token = parse_handshake_response(resp)
         if not ok:
             if quiet:
                 _LOG.debug("TCP handshake: unexpected reply from %s:%s: %r", host, tcp_port, resp)
@@ -103,20 +111,20 @@ def tcp_handshake(
                     tcp_port,
                     resp,
                 )
-            return False, "Handshake failed (unexpected reply)", ""
+            return False, "Handshake failed (unexpected reply)", "", ""
         if bridge_name:
             if not quiet:
                 _LOG.info("TCP handshake: OK from %s:%s (bridge %r)", host, tcp_port, bridge_name)
         else:
             if not quiet:
                 _LOG.info("TCP handshake: OK from %s:%s", host, tcp_port)
-        return True, "", bridge_name
+        return True, "", bridge_name, box_token
     except OSError as e:
         if quiet:
             _LOG.debug("TCP handshake: failed %s:%s: %s", host, tcp_port, e)
         else:
             _LOG.warning("TCP handshake: failed %s:%s: %s", host, tcp_port, e)
-        return False, str(e), ""
+        return False, str(e), "", ""
     finally:
         try:
             s.close()
@@ -244,7 +252,7 @@ def scan_tx_bridges(
         return [], f"Too many hosts to scan ({len(hosts)} > {max_hosts}); use a narrower netmask"
 
     def probe(ip: str) -> Optional[Tuple[str, str]]:
-        ok, _, name = tcp_handshake(ip, handshake_port, timeout=probe_timeout, quiet=True)
+        ok, _, name, _tok = tcp_handshake(ip, handshake_port, timeout=probe_timeout, quiet=True)
         if ok:
             return (ip, name)
         return None

@@ -10,15 +10,16 @@ Environment:
 
 - ``BOX_HTTP_BIND`` — listen address (default ``0.0.0.0``).
 - ``BOX_HTTP_PORT`` — port (default ``50502``).
-- ``BOX_HTTP_TOKEN`` — if set, require ``Authorization: Bearer <token>`` or ``X-Box-Token: <token>``.
 
-Routes (JSON; path string constants in :mod:`raspberry.box_api_paths`):
+Bearer token for POST routes lives in process memory (``set_http_token``). ``network_tx_bridge`` generates
+one token, starts this server in a thread, and sends the same token in the TCP joystick handshake.
 
-- ``GET /api/status`` — ``hardware_ok``, live fields from :class:`raspberry.models.SystemStatus`,
-  (camera stream is UDP MPEG-TS on port 8888; see ``raspberry.video``).
-- ``POST /api/led`` — body ``{"on": true|false}``.
-- ``POST /api/servo`` — body ``{"active": true|false}`` (false detaches PWM).
-- ``POST /api/camera`` — body ``{"streaming": true|false}``.
+Routes (JSON):
+
+- ``GET /api/status`` — open (no token); ``hardware_ok``, live fields from :class:`raspberry.models.SystemStatus`.
+- ``POST /api/led`` — token required; body ``{"on": true|false}``.
+- ``POST /api/servo`` — token required; body ``{"active": true|false}`` (false detaches PWM).
+- ``POST /api/camera`` — token required; body ``{"streaming": true|false}`` (UDP MPEG-TS on port 8888).
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import signal
 import threading
 from dataclasses import asdict
@@ -79,19 +81,22 @@ class BoxServerState:
 
 STATE = BoxServerState()
 
+_http_token: str = ""
 
-def _http_token() -> str:
-    return os.environ.get("BOX_HTTP_TOKEN", "").strip()
+
+def set_http_token(token: str) -> None:
+    """Set bearer token for POST routes (called by ``network_tx_bridge`` before ``main()``)."""
+    global _http_token
+    _http_token = (token or "").strip()
 
 
 def _auth_ok(handler: BaseHTTPRequestHandler) -> bool:
-    tok = _http_token()
-    if not tok:
-        return True
+    global _http_token
+
     auth = handler.headers.get("Authorization", "")
-    if auth == f"Bearer {tok}":
+    if auth == f"Bearer {_http_token}":
         return True
-    if handler.headers.get("X-Box-Token") == tok:
+    if handler.headers.get("X-Box-Token") == _http_token:
         return True
     return False
 
@@ -155,9 +160,6 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True, **d})
 
     def do_GET(self) -> None:
-        if not _auth_ok(self):
-            self._fail(401, "unauthorized")
-            return
         path = urlparse(self.path).path
         if path != API_STATUS:
             self._fail(404, "not found")
@@ -174,14 +176,15 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
-            _note_stream_client(box, self)
+            if _auth_ok(self):
+                _note_stream_client(box, self)
             self._write_status_ok(box)
 
     def do_POST(self) -> None:
+        path = urlparse(self.path).path
         if not _auth_ok(self):
             self._fail(401, "unauthorized")
             return
-        path = urlparse(self.path).path
         if path not in (API_LED, API_SERVO, API_CAMERA):
             self._fail(404, "not found")
             return
@@ -248,7 +251,11 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global _http_token
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    _http_token = secrets.token_urlsafe(24)
+    _LOG.info("Generated in-memory box HTTP token (standalone mode)")
+
     bind = os.environ.get("BOX_HTTP_BIND", "0.0.0.0").strip() or "0.0.0.0"
     port = int(os.environ.get("BOX_HTTP_PORT", "50502"))
     BoxHTTPHandler.state = STATE

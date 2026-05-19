@@ -1,4 +1,7 @@
-"""HTTP client for ``raspberry.box_server`` (status + LED / servo / camera commands)."""
+"""HTTP client for ``raspberry.box_server``.
+
+``GET /api/status`` is open (no token). POST commands require the bridge handshake token.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +13,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 
+BOX_HTTP_PORT = 50502
+
 API_STATUS = "/api/status"
 API_LED = "/api/led"
 API_SERVO = "/api/servo"
@@ -20,7 +25,7 @@ class BoxRemoteClient:
     def __init__(
         self,
         host: str,
-        port: int = 50502,
+        port: int = BOX_HTTP_PORT,
         *,
         token: Optional[str] = None,
         timeout: float = 5.0,

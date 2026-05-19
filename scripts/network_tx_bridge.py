@@ -14,7 +14,9 @@ import configparser
 import getpass
 import logging
 import os
+import secrets
 import socket
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -44,6 +46,7 @@ def _rx_utc_iso() -> str:
 _UDP_RECV_MAX = 2048
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
 _DEFAULT_BRIDGE_CONFIG = os.path.join(_SCRIPT_DIR, "controller_map.txt")
 
 CRSF_SYNC_BYTE = 0xC8
@@ -139,6 +142,20 @@ def load_serial_from_config(config_path: str) -> tuple[str, int]:
     return port, baud
 
 
+def _start_box_http_server(token: str) -> None:
+    """Run ``raspberry.box_server`` in-process so it shares the in-memory token."""
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
+    try:
+        from raspberry import box_server as box_server_mod
+    except ImportError as e:
+        log.warning("Could not import raspberry.box_server (%s); box HTTP disabled", e)
+        return
+    box_server_mod.set_http_token(token)
+    threading.Thread(target=box_server_mod.main, daemon=True, name="box-http").start()
+    log.info("Box HTTP API thread started (in-memory token)")
+
+
 def main():
     ap = argparse.ArgumentParser(description="UDP → CRSF serial bridge for Pi + TX module")
     ap.add_argument("--bind", default="0.0.0.0", help="UDP / TCP bind address")
@@ -182,6 +199,9 @@ def main():
         format="%(levelname)s: %(message)s",
     )
 
+    box_http_token = secrets.token_urlsafe(24)
+    _start_box_http_server(box_http_token)
+
     cfg_serial, cfg_baud = load_serial_from_config(args.config)
     serial_port_pref = args.serial if args.serial is not None else cfg_serial
     baud_rate = args.baud if args.baud is not None else cfg_baud
@@ -210,7 +230,7 @@ def main():
                 conn.settimeout(5.0)
                 data = conn.recv(64)
                 if data and data.strip() == CHANNEL_PACKET_MAGIC:
-                    conn.sendall(format_handshake_ok(bridge_name))
+                    conn.sendall(format_handshake_ok(bridge_name, box_http_token))
                     log.info(
                         "TCP handshake: OK (%r) sent to %s:%s",
                         bridge_name,

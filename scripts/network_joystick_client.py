@@ -87,13 +87,6 @@ def main():
         default=5.0,
         help="Max print lines per second with --print-raw (default 5)",
     )
-    ap.add_argument(
-        "--box-http-port",
-        type=int,
-        default=50502,
-        help="Pi box_server HTTP port (Box tab; default 50502)",
-    )
-    ap.add_argument("--box-http-token", default="", help="Optional BOX_HTTP_TOKEN for box_server (Box tab)")
     ap.add_argument("--box-poll-ms", type=int, default=1500, help="Box status poll interval in ms (min 500)")
     ap.add_argument("--box-http-timeout", type=float, default=5.0, help="Box HTTP request timeout (s)")
     args = ap.parse_args()
@@ -208,6 +201,7 @@ def main():
             return
         if bridge_connected:
             bridge_connected = False
+            view.box_panel.disconnect()
             if sending:
                 sending = False
                 view.send_var.set("Start sending")
@@ -237,7 +231,7 @@ def main():
             return
 
         def worker():
-            ok, err, bridge_name = tcp_handshake(host, args.handshake_port)
+            ok, err, bridge_name, handshake_box_token = tcp_handshake(host, args.handshake_port)
 
             def apply_result():
                 nonlocal bridge_connected, handshake_busy, status_text, last_err, sending, acc
@@ -251,6 +245,10 @@ def main():
                         fg_color="seagreen",
                         hover_color="darkgreen",
                     )
+                    if handshake_box_token.strip():
+                        view.box_panel.connect_with_token(handshake_box_token, quiet=True)
+                    else:
+                        view.box_panel.disconnect()
                     # Start UDP immediately so the bridge receives frames (and --debug shows them)
                     # without requiring a separate "Start sending" click after Connect.
                     if sock is None:
@@ -287,6 +285,7 @@ def main():
                             last_err = str(e)
                 else:
                     bridge_connected = False
+                    view.box_panel.disconnect()
                     last_err = err or "Handshake failed"
                     status_text = "Connect failed"
                     view.connect_btn.configure(

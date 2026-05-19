@@ -11,7 +11,7 @@ from typing import Any, Callable, Optional
 import customtkinter as ctk
 import tkinter.messagebox as tk_messagebox
 
-from modules.box_remote import BoxRemoteClient
+from modules.box_remote import BOX_HTTP_PORT, BoxRemoteClient
 
 VIDEO_STREAM_PORT = 8888
 
@@ -47,50 +47,11 @@ class BoxRemotePanel:
         scroll.grid_columnconfigure(0, weight=1)
         panel = scroll
 
+        self._box_token: Optional[str] = None
+
         row = 0
-        ctk.CTkLabel(
-            panel,
-            text="Uses Target IP from the Joystick tab for box HTTP.",
-            wraplength=480,
-            anchor="w",
-            justify="left",
-            text_color="gray70",
-        ).grid(row=row, column=0, padx=12, pady=(12, 4), sticky="ew")
-        row += 1
-
-        ctk.CTkLabel(panel, text="Box HTTP port").grid(row=row, column=0, padx=4, pady=(8, 2), sticky="w")
-        row += 1
-        self.port_e = ctk.CTkEntry(panel, placeholder_text="50502")
-        self.port_e.insert(0, str(getattr(args, "box_http_port", 50502)))
-        self.port_e.grid(row=row, column=0, padx=4, pady=2, sticky="ew")
-        row += 1
-
-        ctk.CTkLabel(panel, text="Token (optional, BOX_HTTP_TOKEN on Pi)").grid(
-            row=row, column=0, padx=4, pady=(8, 2), sticky="w"
-        )
-        row += 1
-        self.token_e = ctk.CTkEntry(panel, placeholder_text="secret", show="*")
-        tok = getattr(args, "box_http_token", "") or ""
-        if tok:
-            self.token_e.insert(0, tok)
-        self.token_e.grid(row=row, column=0, padx=4, pady=2, sticky="ew")
-        row += 1
-
-        btn_row = ctk.CTkFrame(panel, fg_color="transparent")
-        btn_row.grid(row=row, column=0, padx=4, pady=10, sticky="ew")
-        btn_row.grid_columnconfigure((0, 1), weight=1)
-        self.connect_b = ctk.CTkButton(btn_row, text="Connect box", command=self._on_connect)
-        self.connect_b.grid(row=0, column=0, padx=(0, 6), sticky="ew")
-        self.disconnect_b = ctk.CTkButton(btn_row, text="Disconnect", command=self._on_disconnect, state="disabled")
-        self.disconnect_b.grid(row=0, column=1, padx=(6, 0), sticky="ew")
-        row += 1
-
-        self.conn_l = ctk.CTkLabel(panel, text="Not connected", text_color="gray60")
-        self.conn_l.grid(row=row, column=0, padx=4, pady=(0, 6), sticky="w")
-        row += 1
-
         ctk.CTkLabel(panel, text="Controls", font=ctk.CTkFont(weight="bold")).grid(
-            row=row, column=0, padx=4, pady=(8, 4), sticky="w"
+            row=row, column=0, padx=4, pady=(12, 4), sticky="w"
         )
         row += 1
         ctl = ctk.CTkFrame(panel, fg_color="transparent")
@@ -134,29 +95,6 @@ class BoxRemotePanel:
             lab.grid(row=i, column=1, padx=8, pady=2, sticky="ew")
             self._status_labels[key] = lab
 
-        ctk.CTkLabel(panel, text="Video (mpv/ffplay, UDP MPEG-TS)").grid(
-            row=row, column=0, padx=4, pady=(12, 2), sticky="w"
-        )
-        row += 1
-        self.stream_l = ctk.CTkLabel(
-            panel,
-            text="Connect and start the camera on the Pi to get a play command.",
-            wraplength=520,
-            anchor="w",
-            justify="left",
-        )
-        self.stream_l.grid(row=row, column=0, padx=4, pady=2, sticky="ew")
-        row += 1
-        vid = ctk.CTkFrame(panel, fg_color="transparent")
-        vid.grid(row=row, column=0, padx=4, pady=6, sticky="ew")
-        vid.grid_columnconfigure((0, 1), weight=1)
-        self.copy_url_b = ctk.CTkButton(vid, text="Copy play cmd", command=self._copy_stream_url, state="disabled")
-        self.copy_url_b.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
-        self.play_b = ctk.CTkButton(vid, text="Play video", command=self._try_play_video, state="disabled")
-        self.play_b.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
-
-        self._last_stream_url = ""
-        self._last_play_cmd = ""
         self._video_proc: Optional[subprocess.Popen] = None
 
     @staticmethod
@@ -178,9 +116,20 @@ class BoxRemotePanel:
             return ffplay, "ffplay"
         return self._find_mpv(), "mpv"
 
-    def auto_connect(self, *, quiet: bool = False) -> bool:
-        """Connect to box HTTP using Joystick tab Target IP (no dialog if ``quiet``)."""
+    def connect_with_token(self, token: str, *, quiet: bool = False) -> bool:
+        """Start box HTTP session after joystick bridge Connect (token from handshake)."""
+        tok = (token or "").strip()
+        if not tok:
+            if not quiet:
+                tk_messagebox.showerror(
+                    "Box",
+                    "No box HTTP token from bridge handshake.",
+                    parent=self._root,
+                )
+            return False
+        self._box_token = tok
         if self.client is not None:
+            self.client.token = tok
             return True
         c = self._make_client()
         if c is None:
@@ -189,20 +138,13 @@ class BoxRemotePanel:
         if not d.get("ok"):
             if not quiet:
                 tk_messagebox.showerror("Box", d.get("error", "Request failed"), parent=self._root)
+            self.client = None
             return False
         self.client = c
-        self.connect_b.configure(state="disabled")
-        self.disconnect_b.configure(state="normal")
         self._apply_status(d)
         self._set_controls_enabled(True)
         self._schedule_poll()
         return True
-
-    def _parse_port(self) -> int:
-        try:
-            return int(self.port_e.get().strip() or "50502")
-        except ValueError:
-            return 50502
 
     def _timeout(self) -> float:
         return float(getattr(self.args, "box_http_timeout", 5.0))
@@ -216,14 +158,10 @@ class BoxRemotePanel:
                 parent=self._root,
             )
             return None
-        tok = self.token_e.get().strip() or None
-        return BoxRemoteClient(host, self._parse_port(), token=tok, timeout=self._timeout())
-
-    def _on_connect(self) -> None:
-        self.auto_connect(quiet=False)
+        return BoxRemoteClient(host, BOX_HTTP_PORT, token=self._box_token, timeout=self._timeout())
 
     def disconnect(self) -> None:
-        """Stop polling and clear box HTTP session."""
+        """Stop polling and clear box HTTP session (e.g. joystick Disconnect)."""
         self._on_disconnect()
 
     def _on_disconnect(self) -> None:
@@ -235,17 +173,9 @@ class BoxRemotePanel:
             self._poll_after_id = None
         self.client = None
         self._last_status = {}
-        self.connect_b.configure(state="normal")
-        self.disconnect_b.configure(state="disabled")
-        self.conn_l.configure(text="Not connected", text_color="gray60")
         self._set_controls_enabled(False)
         self._sync_toggle_buttons({})
         self._stop_video_player()
-        self._last_stream_url = ""
-        self.stream_l.configure(text="Connect and start the camera on the Pi to get a play command.")
-        self.copy_url_b.configure(state="disabled")
-        self.play_b.configure(state="disabled")
-        self._last_play_cmd = ""
 
     def shutdown(self) -> None:
         """Stop polling (e.g. window close)."""
@@ -262,7 +192,6 @@ class BoxRemotePanel:
                 return
             d = self.client.get_status()
             if not d.get("ok"):
-                self.conn_l.configure(text=f"Lost: {d.get('error', '?')}", text_color="orange")
                 self._on_disconnect()
                 return
             self._apply_status(d)
@@ -272,27 +201,14 @@ class BoxRemotePanel:
         self._poll_after_id = self._root.after(self.poll_ms, tick)
 
     def _apply_status(self, d: dict) -> None:
+        prev_cam = bool(self._last_status.get("camera_streaming"))
         if d.get("ok"):
             self._last_status = d
         self._sync_toggle_buttons(d)
         if not d.get("ok"):
-            self.conn_l.configure(text=d.get("error", "error"), text_color="orange")
             return
         if not d.get("hardware_ok"):
-            err = d.get("hardware_error", "box unavailable")
-            self.conn_l.configure(text=f"HTTP OK — {err}", text_color="orange")
             return
-
-        if d.get("sensors_ok") is False:
-            parts = []
-            if d.get("env_error"):
-                parts.append(f"env: {d['env_error']}")
-            if d.get("battery_error"):
-                parts.append(f"ADC: {d['battery_error']}")
-            hint = "; ".join(parts) if parts else "sensors unavailable"
-            self.conn_l.configure(text=f"Connected — controls OK ({hint})", text_color="#c9a227")
-        else:
-            self.conn_l.configure(text="Connected", text_color="#2fa572")
 
         def fmt_val(key: str, v) -> str:
             if v is None:
@@ -311,9 +227,9 @@ class BoxRemotePanel:
                 continue
             lab.configure(text=fmt_val(key, d.get(key)))
 
-        host = self._get_target_ip().strip()
         cam_on = bool(d.get("camera_streaming"))
-        self._update_stream_hint(host, cam_on)
+        if prev_cam and not cam_on:
+            self._stop_video_player()
 
     def _video_play_url(self) -> str:
         return f"udp://0.0.0.0:{VIDEO_STREAM_PORT}?listen=1&reuse=1"
@@ -352,10 +268,6 @@ class BoxRemotePanel:
             return self._mpv_argv(player_bin)
         return self._ffplay_argv(player_bin)
 
-    def _play_command(self, kind: str) -> str:
-        bin_name = "mpv" if kind == "mpv" else "ffplay"
-        return " ".join(self._play_argv(bin_name, kind))
-
     @staticmethod
     def _player_env(kind: str) -> dict[str, str]:
         env = os.environ.copy()
@@ -378,43 +290,6 @@ class BoxRemotePanel:
                 proc.wait(timeout=1.0)
             except Exception:
                 pass
-
-    def _update_stream_hint(
-        self,
-        host: str,
-        cam_on: bool,
-    ) -> None:
-        host = host.strip()
-        if host and self.client is not None:
-            url = self._video_play_url()
-            player_bin, kind = self._find_video_player()
-            cmd = self._play_command(kind) if player_bin else ""
-            self._last_stream_url = url
-            self._last_play_cmd = cmd
-            cam_line = (
-                "UDP stream active — Play video or paste the command in a terminal."
-                if cam_on
-                else "Turn Video ON, then Play video."
-            )
-            if player_bin:
-                play_line = f"Uses {kind} (low latency). Install mpv or ffmpeg if missing."
-            else:
-                play_line = "Install mpv (brew install mpv) or ffmpeg (ffplay)."
-            self.stream_l.configure(
-                text=f"{cmd}\n"
-                f"{cam_line}\n{play_line}\n"
-                f"MPEG-TS · UDP unicast to this PC · port {VIDEO_STREAM_PORT}"
-            )
-            self.copy_url_b.configure(state="normal")
-            self.play_b.configure(state="normal" if player_bin else "disabled")
-        else:
-            self._last_stream_url = ""
-            self._last_play_cmd = ""
-            self.stream_l.configure(
-                text="Connect box, then turn Video ON. Copy / Play video use the Pi Target IP."
-            )
-            self.copy_url_b.configure(state="disabled")
-            self.play_b.configure(state="disabled")
 
     def _set_controls_enabled(self, on: bool) -> None:
         st = "normal" if on else "disabled"
@@ -506,52 +381,17 @@ class BoxRemotePanel:
             return
         self._apply_status(d)
 
-    def _cam(self, streaming: bool) -> None:
-        if self.client is None:
-            return
-        d = self.client.set_camera_streaming(streaming)
-        if not d.get("ok"):
-            tk_messagebox.showerror(
-                "Box",
-                self._command_error_text(d, "Camera command failed"),
-                parent=self._root,
-            )
-            return
-        self._apply_status(d)
-
-    def _copy_stream_url(self) -> None:
-        if not self._last_play_cmd:
-            return
-        self._root.clipboard_clear()
-        self._root.clipboard_append(self._last_play_cmd)
-        self._root.update()
-
-    def _try_play_video(self) -> None:
-        if not self._last_stream_url:
-            tk_messagebox.showinfo(
-                "Box",
-                "Connect box and set Target IP on the Joystick tab first.",
-                parent=self._root,
-            )
-            return
-        if not self._last_status.get("camera_streaming"):
-            tk_messagebox.showinfo(
-                "Box",
-                "Turn Video ON first so the Pi starts rpicam-vid, then Play video again.",
-                parent=self._root,
-            )
-            return
+    def _start_video_player(self) -> bool:
         player_bin, kind = self._find_video_player()
         if not player_bin:
             tk_messagebox.showinfo(
                 "Box",
                 "No video player found.\n"
                 "Install mpv: brew install mpv\n"
-                "Or ffmpeg (ffplay): brew install ffmpeg\n"
-                "Or use Copy and run the command in Terminal.",
+                "Or ffmpeg (ffplay): brew install ffmpeg",
                 parent=self._root,
             )
-            return
+            return False
         self._stop_video_player()
         try:
             self._video_proc = subprocess.Popen(
@@ -562,3 +402,37 @@ class BoxRemotePanel:
         except OSError as e:
             self._video_proc = None
             tk_messagebox.showerror("Box", str(e), parent=self._root)
+            return False
+        return True
+
+    def _cam(self, streaming: bool) -> None:
+        if self.client is None:
+            return
+        if streaming:
+            player_bin, _ = self._find_video_player()
+            if not player_bin:
+                tk_messagebox.showinfo(
+                    "Box",
+                    "No video player found.\n"
+                    "Install mpv: brew install mpv\n"
+                    "Or ffmpeg (ffplay): brew install ffmpeg",
+                    parent=self._root,
+                )
+                return
+        else:
+            self._stop_video_player()
+        d = self.client.set_camera_streaming(streaming)
+        if not d.get("ok"):
+            tk_messagebox.showerror(
+                "Box",
+                self._command_error_text(d, "Camera command failed"),
+                parent=self._root,
+            )
+            if streaming:
+                self._stop_video_player()
+            return
+        self._apply_status(d)
+        if streaming and bool(d.get("camera_streaming")):
+            self._start_video_player()
+        elif not streaming:
+            self._stop_video_player()
