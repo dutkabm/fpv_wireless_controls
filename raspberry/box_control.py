@@ -25,10 +25,11 @@ else:
     from models import DividerConfig, SystemStatus
     from video import CameraStream
 
-# --- Optional env overrides (BCM pin numbers unless noted) ---
-# export BOX_LED_PIN=18
-# export BOX_SERVO_PIN=12
-# export BOX_DRONE_POWER_PIN=16
+# BCM GPIO (board header pins vary by Pi model).
+BOX_LED_PIN = 17
+BOX_SERVO_PIN = 13
+BOX_DRONE_POWER_PIN = 26
+
 # export BOX_I2C_BUS=1   # Linux device /dev/i2c-1 (enable I2C in raspi-config)
 
 
@@ -150,13 +151,7 @@ class BatteryMonitor:
 class BoxOutputs:
     """LED, servo, and drone power switching (gpiozero, BCM). Each output inits independently."""
 
-    def __init__(
-        self,
-        led_pin: Optional[int] = None,
-        servo_pin: Optional[int] = None,
-        drone_power_pin: Optional[int] = None,
-        drone_power_active_high: bool = False,
-    ):
+    def __init__(self, drone_power_active_high: bool = False) -> None:
         self._led = None
         self._servo = None
         self._drone_power = None
@@ -164,16 +159,9 @@ class BoxOutputs:
         self.servo_error: Optional[str] = None
         self.drone_power_error: Optional[str] = None
 
-        self._led_pin = int(os.environ.get("BOX_LED_PIN", led_pin if led_pin is not None else 18))
-        self._servo_pin = int(
-            os.environ.get("BOX_SERVO_PIN", servo_pin if servo_pin is not None else 12)
-        )
-        self._drone_pin = int(
-            os.environ.get(
-                "BOX_DRONE_POWER_PIN",
-                drone_power_pin if drone_power_pin is not None else 16,
-            )
-        )
+        self._led_pin = BOX_LED_PIN
+        self._servo_pin = BOX_SERVO_PIN
+        self._drone_pin = BOX_DRONE_POWER_PIN
 
         try:
             from gpiozero import DigitalOutputDevice, Servo
@@ -296,25 +284,14 @@ class BoxOutputs:
 class BoxController:
     """GPIO/camera outputs; I2C sensors (env + ADC) are optional if init fails."""
 
-    def __init__(
-        self,
-        led_pin: Optional[int] = None,
-        servo_pin: Optional[int] = None,
-        drone_power_pin: Optional[int] = None,
-        drone_power_active_high: bool = True,
-    ):
+    def __init__(self, drone_power_active_high: bool = True) -> None:
         self.env: Optional[EnvironmentSensor] = None
         self.batteries: Optional[BatteryMonitor] = None
         self.env_error: Optional[str] = None
         self.battery_error: Optional[str] = None
         self._i2c = None
 
-        self.gpio = BoxOutputs(
-            led_pin=led_pin,
-            servo_pin=servo_pin,
-            drone_power_pin=drone_power_pin,
-            drone_power_active_high=drone_power_active_high,
-        )
+        self.gpio = BoxOutputs(drone_power_active_high=drone_power_active_high)
         self.camera_stream = CameraStream()
 
         try:
