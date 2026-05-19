@@ -134,13 +134,13 @@ class BoxRemotePanel:
             lab.grid(row=i, column=1, padx=8, pady=2, sticky="ew")
             self._status_labels[key] = lab
 
-        ctk.CTkLabel(panel, text="Video (ffplay, UDP MPEG-TS)").grid(
+        ctk.CTkLabel(panel, text="Video (mpv/ffplay, UDP MPEG-TS)").grid(
             row=row, column=0, padx=4, pady=(12, 2), sticky="w"
         )
         row += 1
         self.stream_l = ctk.CTkLabel(
             panel,
-            text="Connect and start the camera on the Pi to get a ffplay command.",
+            text="Connect and start the camera on the Pi to get a play command.",
             wraplength=520,
             anchor="w",
             justify="left",
@@ -150,18 +150,33 @@ class BoxRemotePanel:
         vid = ctk.CTkFrame(panel, fg_color="transparent")
         vid.grid(row=row, column=0, padx=4, pady=6, sticky="ew")
         vid.grid_columnconfigure((0, 1), weight=1)
-        self.copy_url_b = ctk.CTkButton(vid, text="Copy ffplay cmd", command=self._copy_stream_url, state="disabled")
+        self.copy_url_b = ctk.CTkButton(vid, text="Copy play cmd", command=self._copy_stream_url, state="disabled")
         self.copy_url_b.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
-        self.ffplay_b = ctk.CTkButton(vid, text="Try ffplay", command=self._try_ffplay, state="disabled")
-        self.ffplay_b.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
+        self.play_b = ctk.CTkButton(vid, text="Play video", command=self._try_play_video, state="disabled")
+        self.play_b.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
 
         self._last_stream_url = ""
-        self._last_ffplay_cmd = ""
-        self._ffplay_proc: Optional[subprocess.Popen] = None
+        self._last_play_cmd = ""
+        self._video_proc: Optional[subprocess.Popen] = None
+
+    @staticmethod
+    def _find_mpv() -> Optional[str]:
+        return shutil.which("mpv")
 
     @staticmethod
     def _find_ffplay() -> Optional[str]:
         return shutil.which("ffplay")
+
+    def _find_video_player(self) -> tuple[Optional[str], str]:
+        """Return (binary path, ``mpv`` or ``ffplay``). Prefers mpv on macOS."""
+        if sys.platform == "darwin":
+            mpv = self._find_mpv()
+            if mpv:
+                return mpv, "mpv"
+        ffplay = self._find_ffplay()
+        if ffplay:
+            return ffplay, "ffplay"
+        return self._find_mpv(), "mpv"
 
     def auto_connect(self, *, quiet: bool = False) -> bool:
         """Connect to box HTTP using Joystick tab Target IP (no dialog if ``quiet``)."""
@@ -225,16 +240,16 @@ class BoxRemotePanel:
         self.conn_l.configure(text="Not connected", text_color="gray60")
         self._set_controls_enabled(False)
         self._sync_toggle_buttons({})
-        self._stop_ffplay()
+        self._stop_video_player()
         self._last_stream_url = ""
-        self.stream_l.configure(text="Connect and start the camera on the Pi to get a ffplay command.")
+        self.stream_l.configure(text="Connect and start the camera on the Pi to get a play command.")
         self.copy_url_b.configure(state="disabled")
-        self.ffplay_b.configure(state="disabled")
-        self._last_ffplay_cmd = ""
+        self.play_b.configure(state="disabled")
+        self._last_play_cmd = ""
 
     def shutdown(self) -> None:
         """Stop polling (e.g. window close)."""
-        self._stop_ffplay()
+        self._stop_video_player()
         self.disconnect()
 
     def _schedule_poll(self) -> None:
@@ -301,7 +316,18 @@ class BoxRemotePanel:
         self._update_stream_hint(host, cam_on)
 
     def _video_play_url(self) -> str:
-        return f"udp://@:{VIDEO_STREAM_PORT}?reuse=1"
+        return f"udp://0.0.0.0:{VIDEO_STREAM_PORT}?listen=1&reuse=1"
+
+    def _mpv_argv(self, mpv_bin: str) -> list[str]:
+        return [
+            mpv_bin,
+            "--no-terminal",
+            "--profile=low-latency",
+            "--cache=no",
+            "--untimed",
+            "--no-correct-pts",
+            self._video_play_url(),
+        ]
 
     def _ffplay_argv(self, ffplay_bin: str) -> list[str]:
         return [
@@ -315,23 +341,32 @@ class BoxRemotePanel:
             "-flags",
             "low_delay",
             "-framedrop",
+            "-f",
+            "mpegts",
             "-i",
             self._video_play_url(),
         ]
 
-    def _ffplay_command(self) -> str:
-        return " ".join(self._ffplay_argv("ffplay"))
+    def _play_argv(self, player_bin: str, kind: str) -> list[str]:
+        if kind == "mpv":
+            return self._mpv_argv(player_bin)
+        return self._ffplay_argv(player_bin)
+
+    def _play_command(self, kind: str) -> str:
+        bin_name = "mpv" if kind == "mpv" else "ffplay"
+        return " ".join(self._play_argv(bin_name, kind))
 
     @staticmethod
-    def _ffplay_env() -> dict[str, str]:
+    def _player_env(kind: str) -> dict[str, str]:
         env = os.environ.copy()
-        if sys.platform == "darwin":
-            env.setdefault("SDL_VIDEODRIVER", "cocoa")
+        if kind == "ffplay" and sys.platform == "darwin":
+            env["SDL_VIDEODRIVER"] = "cocoa"
+            env.pop("DISPLAY", None)
         return env
 
-    def _stop_ffplay(self) -> None:
-        proc = self._ffplay_proc
-        self._ffplay_proc = None
+    def _stop_video_player(self) -> None:
+        proc = self._video_proc
+        self._video_proc = None
         if proc is None:
             return
         try:
@@ -352,35 +387,34 @@ class BoxRemotePanel:
         host = host.strip()
         if host and self.client is not None:
             url = self._video_play_url()
-            cmd = self._ffplay_command()
+            player_bin, kind = self._find_video_player()
+            cmd = self._play_command(kind) if player_bin else ""
             self._last_stream_url = url
-            self._last_ffplay_cmd = cmd
-            ffplay_path = self._find_ffplay()
+            self._last_play_cmd = cmd
             cam_line = (
-                "UDP stream active — Try ffplay or paste the command in a terminal."
+                "UDP stream active — Play video or paste the command in a terminal."
                 if cam_on
-                else "Turn Video ON, then Try ffplay."
+                else "Turn Video ON, then Play video."
             )
-            ffplay_line = (
-                "Try ffplay: nobuffer, low_delay, framedrop."
-                if ffplay_path
-                else "ffplay not on PATH — install ffmpeg, or Copy ffplay cmd."
-            )
+            if player_bin:
+                play_line = f"Uses {kind} (low latency). Install mpv or ffmpeg if missing."
+            else:
+                play_line = "Install mpv (brew install mpv) or ffmpeg (ffplay)."
             self.stream_l.configure(
                 text=f"{cmd}\n"
-                f"{cam_line}\n{ffplay_line}\n"
-                f"MPEG-TS · UDP unicast to this PC · Pi default 640×480 @ 25 fps"
+                f"{cam_line}\n{play_line}\n"
+                f"MPEG-TS · UDP unicast to this PC · port {VIDEO_STREAM_PORT}"
             )
             self.copy_url_b.configure(state="normal")
-            self.ffplay_b.configure(state="normal" if ffplay_path else "disabled")
+            self.play_b.configure(state="normal" if player_bin else "disabled")
         else:
             self._last_stream_url = ""
-            self._last_ffplay_cmd = ""
+            self._last_play_cmd = ""
             self.stream_l.configure(
-                text="Connect box, then turn Video ON. Copy / Try ffplay use the Pi Target IP."
+                text="Connect box, then turn Video ON. Copy / Play video use the Pi Target IP."
             )
             self.copy_url_b.configure(state="disabled")
-            self.ffplay_b.configure(state="disabled")
+            self.play_b.configure(state="disabled")
 
     def _set_controls_enabled(self, on: bool) -> None:
         st = "normal" if on else "disabled"
@@ -486,13 +520,13 @@ class BoxRemotePanel:
         self._apply_status(d)
 
     def _copy_stream_url(self) -> None:
-        if not self._last_ffplay_cmd:
+        if not self._last_play_cmd:
             return
         self._root.clipboard_clear()
-        self._root.clipboard_append(self._last_ffplay_cmd)
+        self._root.clipboard_append(self._last_play_cmd)
         self._root.update()
 
-    def _try_ffplay(self) -> None:
+    def _try_play_video(self) -> None:
         if not self._last_stream_url:
             tk_messagebox.showinfo(
                 "Box",
@@ -503,26 +537,28 @@ class BoxRemotePanel:
         if not self._last_status.get("camera_streaming"):
             tk_messagebox.showinfo(
                 "Box",
-                "Turn Video ON first so the Pi starts rpicam-vid, then Try ffplay again.",
+                "Turn Video ON first so the Pi starts rpicam-vid, then Play video again.",
                 parent=self._root,
             )
             return
-        ffplay = self._find_ffplay()
-        if not ffplay:
+        player_bin, kind = self._find_video_player()
+        if not player_bin:
             tk_messagebox.showinfo(
                 "Box",
-                "ffplay not found. Install ffmpeg (ffplay is included).\n"
-                "Or use Copy ffplay cmd and run it in a terminal.",
+                "No video player found.\n"
+                "Install mpv: brew install mpv\n"
+                "Or ffmpeg (ffplay): brew install ffmpeg\n"
+                "Or use Copy and run the command in Terminal.",
                 parent=self._root,
             )
             return
-        self._stop_ffplay()
+        self._stop_video_player()
         try:
-            self._ffplay_proc = subprocess.Popen(
-                self._ffplay_argv(ffplay),
-                env=self._ffplay_env(),
+            self._video_proc = subprocess.Popen(
+                self._play_argv(player_bin, kind),
+                env=self._player_env(kind),
                 start_new_session=True,
             )
         except OSError as e:
-            self._ffplay_proc = None
+            self._video_proc = None
             tk_messagebox.showerror("Box", str(e), parent=self._root)

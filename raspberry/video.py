@@ -5,7 +5,7 @@ No extra pip dependencies; uses the system camera stack on Pi OS Bookworm.
 
 Default stream: UDP MPEG-TS on port 8888 to the ground-station client that enabled video via the box HTTP API.
 
-Viewers: ``ffplay -fflags nobuffer -flags low_delay -framedrop -i udp://@:8888``.
+Viewers: ``ffplay -f mpegts -fflags nobuffer -flags low_delay -framedrop -i 'udp://0.0.0.0:8888?listen=1'`` (or ``mpv``).
 
 Environment (optional):
 
@@ -60,16 +60,16 @@ def _normalize_camera_error(raw: str) -> str:
         return (
             "Stream socket error (rpicam-vid).\n"
             "• Turn Video ON on the Pi, then run ffplay on the ground station\n"
-            f"• Viewer: ffplay -i udp://@:{STREAM_PORT} on the ground station (Box tab Try ffplay)\n"
+            f"• Viewer: Box tab Play video (UDP listen on port {STREAM_PORT})\n"
             "• If playback stops, toggle Video off/on on the Box tab"
         )
     return t[-1200:]
 
 
 def camera_stream_client_url(port: Optional[int] = None) -> str:
-    """ffplay input URL (listen on the ground station for Pi unicast)."""
+    """UDP input URL (listen on the ground station for Pi unicast)."""
     p = port if port is not None else STREAM_PORT
-    return f"udp://@:{p}?reuse=1"
+    return f"udp://0.0.0.0:{p}?listen=1&reuse=1"
 
 
 def ffplay_low_latency_argv(ffplay_bin: str, input_url: Optional[str] = None) -> List[str]:
@@ -86,7 +86,23 @@ def ffplay_low_latency_argv(ffplay_bin: str, input_url: Optional[str] = None) ->
         "-flags",
         "low_delay",
         "-framedrop",
+        "-f",
+        "mpegts",
         "-i",
+        url,
+    ]
+
+
+def mpv_low_latency_argv(mpv_bin: str, input_url: Optional[str] = None) -> List[str]:
+    """``mpv`` with minimal buffering (preferred on macOS)."""
+    url = input_url if input_url is not None else camera_stream_client_url()
+    return [
+        mpv_bin,
+        "--no-terminal",
+        "--profile=low-latency",
+        "--cache=no",
+        "--untimed",
+        "--no-correct-pts",
         url,
     ]
 
