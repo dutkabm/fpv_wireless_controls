@@ -142,6 +142,18 @@ def load_serial_from_config(config_path: str) -> tuple[str, int]:
     return port, baud
 
 
+def _tcp_port_available(bind: str, port: int) -> bool:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        probe.bind((bind, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 def _start_box_http_server(token: str) -> None:
     """Run ``raspberry.box_server`` in-process so it shares the in-memory token."""
     if _REPO_ROOT not in sys.path:
@@ -151,9 +163,27 @@ def _start_box_http_server(token: str) -> None:
     except ImportError as e:
         log.warning("Could not import raspberry.box_server (%s); box HTTP disabled", e)
         return
+
+    bind = "0.0.0.0"
+    port = box_server_mod.BOX_HTTP_PORT
+    if not _tcp_port_available(bind, port):
+        log.error(
+            "Box HTTP port %s is already in use. Stop any other box_server or tx_bridge "
+            "(e.g. pkill -f box_server) and restart — only one listener is supported.",
+            port,
+        )
+        return
+
     box_server_mod.set_http_token(token)
-    threading.Thread(target=box_server_mod.main, daemon=True, name="box-http").start()
-    log.info("Box HTTP API thread started (in-memory token)")
+
+    def _run_box_http() -> None:
+        try:
+            box_server_mod.main()
+        except OSError as e:
+            log.error("Box HTTP server failed: %s", e)
+
+    threading.Thread(target=_run_box_http, daemon=True, name="box-http").start()
+    log.info("Box HTTP API thread started on port %s", port)
 
 
 def main():

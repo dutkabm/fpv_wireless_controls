@@ -43,6 +43,8 @@ else:
 _LOG = logging.getLogger(__name__)
 
 
+BOX_HTTP_PORT = 50502
+
 API_STATUS = "/api/status"
 API_LED = "/api/led"
 API_SERVO = "/api/servo"
@@ -91,8 +93,8 @@ def set_http_token(token: str) -> None:
 
 
 def _auth_ok(handler: BaseHTTPRequestHandler) -> bool:
-    global _http_token
-
+    if not _http_token:
+        return False
     auth = handler.headers.get("Authorization", "")
     if auth == f"Bearer {_http_token}":
         return True
@@ -250,16 +252,21 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
             self._write_status_ok(box)
 
 
+class _BoxHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
 def main() -> None:
     global _http_token
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    _http_token = secrets.token_urlsafe(24)
-    _LOG.info("Generated in-memory box HTTP token (standalone mode)")
+    if not _http_token:
+        _http_token = secrets.token_urlsafe(24)
+        _LOG.info("Generated in-memory box HTTP token (standalone mode)")
 
     bind = os.environ.get("BOX_HTTP_BIND", "0.0.0.0").strip() or "0.0.0.0"
-    port = int(os.environ.get("BOX_HTTP_PORT", "50502"))
+    port = int(os.environ.get("BOX_HTTP_PORT", str(BOX_HTTP_PORT)))
     BoxHTTPHandler.state = STATE
-    server = ThreadingHTTPServer((bind, port), BoxHTTPHandler)
+    server = _BoxHTTPServer((bind, port), BoxHTTPHandler)
 
     def _shutdown(*_args: Any) -> None:
         _LOG.info("Shutting down…")
@@ -267,8 +274,9 @@ def main() -> None:
             STATE.close_box_locked()
         threading.Thread(target=server.shutdown, daemon=True).start()
 
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, _shutdown)
+        signal.signal(signal.SIGTERM, _shutdown)
     _LOG.info("Box HTTP API on http://%s:%s/ (GET %s)", bind, port, API_STATUS)
     try:
         server.serve_forever()
