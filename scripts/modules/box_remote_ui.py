@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 from typing import Any, Callable, Optional
 
 import customtkinter as ctk
@@ -155,6 +157,7 @@ class BoxRemotePanel:
 
         self._last_stream_url = ""
         self._last_ffplay_cmd = ""
+        self._ffplay_proc: Optional[subprocess.Popen] = None
 
     @staticmethod
     def _find_ffplay() -> Optional[str]:
@@ -222,6 +225,7 @@ class BoxRemotePanel:
         self.conn_l.configure(text="Not connected", text_color="gray60")
         self._set_controls_enabled(False)
         self._sync_toggle_buttons({})
+        self._stop_ffplay()
         self._last_stream_url = ""
         self.stream_l.configure(text="Connect and start the camera on the Pi to get a ffplay command.")
         self.copy_url_b.configure(state="disabled")
@@ -230,6 +234,7 @@ class BoxRemotePanel:
 
     def shutdown(self) -> None:
         """Stop polling (e.g. window close)."""
+        self._stop_ffplay()
         self.disconnect()
 
     def _schedule_poll(self) -> None:
@@ -296,11 +301,48 @@ class BoxRemotePanel:
         self._update_stream_hint(host, cam_on)
 
     def _video_play_url(self) -> str:
-        return f"udp://@:{VIDEO_STREAM_PORT}"
+        return f"udp://@:{VIDEO_STREAM_PORT}?reuse=1"
+
+    def _ffplay_argv(self, ffplay_bin: str) -> list[str]:
+        return [
+            ffplay_bin,
+            "-loglevel",
+            "warning",
+            "-hwaccel",
+            "none",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-framedrop",
+            "-i",
+            self._video_play_url(),
+        ]
 
     def _ffplay_command(self) -> str:
-        url = self._video_play_url()
-        return f"ffplay -fflags nobuffer -flags low_delay -framedrop -i {url}"
+        return " ".join(self._ffplay_argv("ffplay"))
+
+    @staticmethod
+    def _ffplay_env() -> dict[str, str]:
+        env = os.environ.copy()
+        if sys.platform == "darwin":
+            env.setdefault("SDL_VIDEODRIVER", "cocoa")
+        return env
+
+    def _stop_ffplay(self) -> None:
+        proc = self._ffplay_proc
+        self._ffplay_proc = None
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=2.0)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=1.0)
+            except Exception:
+                pass
 
     def _update_stream_hint(
         self,
@@ -474,19 +516,13 @@ class BoxRemotePanel:
                 parent=self._root,
             )
             return
+        self._stop_ffplay()
         try:
-            subprocess.Popen(
-                [
-                    ffplay,
-                    "-fflags",
-                    "nobuffer",
-                    "-flags",
-                    "low_delay",
-                    "-framedrop",
-                    "-i",
-                    self._last_stream_url,
-                ],
+            self._ffplay_proc = subprocess.Popen(
+                self._ffplay_argv(ffplay),
+                env=self._ffplay_env(),
                 start_new_session=True,
             )
         except OSError as e:
+            self._ffplay_proc = None
             tk_messagebox.showerror("Box", str(e), parent=self._root)

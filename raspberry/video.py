@@ -69,20 +69,25 @@ def _normalize_camera_error(raw: str) -> str:
 def camera_stream_client_url(port: Optional[int] = None) -> str:
     """ffplay input URL (listen on the ground station for Pi unicast)."""
     p = port if port is not None else STREAM_PORT
-    return f"udp://@:{p}"
+    return f"udp://@:{p}?reuse=1"
 
 
-def ffplay_low_latency_argv(input_url: str) -> List[str]:
+def ffplay_low_latency_argv(ffplay_bin: str, input_url: Optional[str] = None) -> List[str]:
     """``ffplay`` with minimal buffering (Box tab / manual launch)."""
+    url = input_url if input_url is not None else camera_stream_client_url()
     return [
-        "ffplay",
+        ffplay_bin,
+        "-loglevel",
+        "warning",
+        "-hwaccel",
+        "none",
         "-fflags",
         "nobuffer",
         "-flags",
         "low_delay",
         "-framedrop",
         "-i",
-        input_url,
+        url,
     ]
 
 
