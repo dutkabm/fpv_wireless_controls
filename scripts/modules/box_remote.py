@@ -19,6 +19,7 @@ API_STATUS = "/api/status"
 API_LED = "/api/led"
 API_SERVO = "/api/servo"
 API_CAMERA = "/api/camera"
+API_DRONE_POWER = "/api/drone-power"
 
 
 class BoxRemoteClient:
@@ -80,3 +81,6 @@ class BoxRemoteClient:
 
     def set_camera_streaming(self, streaming: bool) -> Dict[str, Any]:
         return self._request("POST", API_CAMERA, {"streaming": streaming})
+
+    def set_drone_power(self, on: bool) -> Dict[str, Any]:
+        return self._request("POST", API_DRONE_POWER, {"on": on})

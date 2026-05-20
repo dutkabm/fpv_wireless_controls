@@ -56,15 +56,19 @@ class BoxRemotePanel:
         row += 1
         ctl = ctk.CTkFrame(panel, fg_color="transparent")
         ctl.grid(row=row, column=0, padx=4, pady=4, sticky="ew")
-        ctl.grid_columnconfigure((0, 1, 2), weight=1)
+        ctl.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        self.cam_toggle_b = ctk.CTkButton(ctl, text="Video: off", command=self._toggle_cam, state="disabled", height=36)
+        self.cam_toggle_b.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
         self.led_toggle_b = ctk.CTkButton(ctl, text="LED: off", command=self._toggle_led, state="disabled", height=36)
-        self.led_toggle_b.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
+        self.led_toggle_b.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
         self.servo_toggle_b = ctk.CTkButton(
             ctl, text="Servo: stop", command=self._toggle_servo, state="disabled", height=36
         )
-        self.servo_toggle_b.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
-        self.cam_toggle_b = ctk.CTkButton(ctl, text="Video: off", command=self._toggle_cam, state="disabled", height=36)
-        self.cam_toggle_b.grid(row=0, column=2, padx=4, pady=4, sticky="ew")
+        self.servo_toggle_b.grid(row=0, column=2, padx=4, pady=4, sticky="ew")
+        self.drone_power_toggle_b = ctk.CTkButton(
+            ctl, text="Drone power: off", command=self._toggle_drone_power, state="disabled", height=36
+        )
+        self.drone_power_toggle_b.grid(row=0, column=3, padx=4, pady=4, sticky="ew")
         row += 1
 
         ctk.CTkLabel(panel, text="Status", font=ctk.CTkFont(weight="bold")).grid(
@@ -83,10 +87,10 @@ class BoxRemotePanel:
             ("Pressure hPa", "pressure_hpa"),
             ("Box V", "box_battery_v"),
             ("Drone V", "drone_battery_v"),
+            ("Camera", "camera_streaming"),
             ("LED", "led_on"),
             ("Servo", "servo_active"),
             ("Drone power", "drone_power_on"),
-            ("Camera", "camera_streaming"),
             ("Cam error", "camera_stream_error"),
         ]
         for i, (title, key) in enumerate(labels):
@@ -293,7 +297,7 @@ class BoxRemotePanel:
 
     def _set_controls_enabled(self, on: bool) -> None:
         st = "normal" if on else "disabled"
-        for b in (self.led_toggle_b, self.servo_toggle_b, self.cam_toggle_b):
+        for b in (self.cam_toggle_b, self.led_toggle_b, self.servo_toggle_b, self.drone_power_toggle_b):
             b.configure(state=st)
 
     def _toggle_on_color(self) -> tuple[str, str]:
@@ -303,13 +307,15 @@ class BoxRemotePanel:
         return "gray40", "gray35"
 
     def _sync_toggle_buttons(self, d: dict) -> None:
+        cam_on = bool(d.get("camera_streaming"))
         led_on = bool(d.get("led_on"))
         servo_on = bool(d.get("servo_active"))
-        cam_on = bool(d.get("camera_streaming"))
+        drone_on = bool(d.get("drone_power_on"))
         pairs = (
+            (self.cam_toggle_b, f"Video: {'on' if cam_on else 'off'}", cam_on),
             (self.led_toggle_b, f"LED: {'on' if led_on else 'off'}", led_on),
             (self.servo_toggle_b, f"Servo: {'run' if servo_on else 'stop'}", servo_on),
-            (self.cam_toggle_b, f"Video: {'on' if cam_on else 'off'}", cam_on),
+            (self.drone_power_toggle_b, f"Drone power: {'on' if drone_on else 'off'}", drone_on),
         )
         for btn, text, active in pairs:
             fg, hover = self._toggle_on_color() if active else self._toggle_off_color()
@@ -335,10 +341,20 @@ class BoxRemotePanel:
         on = not bool(self._last_status.get("camera_streaming"))
         self._cam(on)
 
+    def _toggle_drone_power(self) -> None:
+        if self.client is None:
+            return
+        on = not bool(self._last_status.get("drone_power_on"))
+        self._drone_power(on)
+
     def _command_error_text(self, d: dict, fallback: str) -> str:
         parts = [d.get("error"), d.get("hardware_error"), d.get("camera_stream_error")]
         if d.get("led_error"):
             parts.append(f"LED: {d['led_error']}")
+        if d.get("servo_error"):
+            parts.append(f"Servo: {d['servo_error']}")
+        if d.get("drone_power_error"):
+            parts.append(f"Drone power: {d['drone_power_error']}")
         msg = "\n".join(p for p in parts if p)
         return msg or fallback
 
@@ -376,6 +392,19 @@ class BoxRemotePanel:
             tk_messagebox.showerror(
                 "Box",
                 self._command_error_text(d, "Servo command failed"),
+                parent=self._root,
+            )
+            return
+        self._apply_status(d)
+
+    def _drone_power(self, on: bool) -> None:
+        if self.client is None:
+            return
+        d = self.client.set_drone_power(on)
+        if not d.get("ok"):
+            tk_messagebox.showerror(
+                "Box",
+                self._command_error_text(d, "Drone power command failed"),
                 parent=self._root,
             )
             return

@@ -20,6 +20,7 @@ Routes (JSON):
 - ``POST /api/led`` — token required; body ``{"on": true|false}``.
 - ``POST /api/servo`` — token required; body ``{"active": true|false}`` (false detaches PWM).
 - ``POST /api/camera`` — token required; body ``{"streaming": true|false}`` (UDP MPEG-TS on port 8888).
+- ``POST /api/drone-power`` — token required; body ``{"on": true|false}``.
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ API_STATUS = "/api/status"
 API_LED = "/api/led"
 API_SERVO = "/api/servo"
 API_CAMERA = "/api/camera"
+API_DRONE_POWER = "/api/drone-power"
 
 
 class BoxServerState:
@@ -187,7 +189,7 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
         if not _auth_ok(self):
             self._fail(401, "unauthorized")
             return
-        if path not in (API_LED, API_SERVO, API_CAMERA):
+        if path not in (API_LED, API_SERVO, API_CAMERA, API_DRONE_POWER):
             self._fail(404, "not found")
             return
         try:
@@ -245,6 +247,11 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
                             return
                     else:
                         box.camera_stream_stop()
+                elif path == API_DRONE_POWER:
+                    if "on" not in body:
+                        self._fail(400, "missing on")
+                        return
+                    box.gpio.drone_power_set(bool(body["on"]))
             except Exception as e:
                 _LOG.exception("command failed")
                 self._fail(500, str(e))
