@@ -11,8 +11,8 @@ Environment:
 - ``BOX_HTTP_BIND`` — listen address (default ``0.0.0.0``).
 - ``BOX_HTTP_PORT`` — port (default ``50502``).
 
-Bearer token for POST routes lives in process memory (``set_http_token``). ``network_tx_bridge`` generates
-one token, starts this server in a thread, and sends the same token in the TCP joystick handshake.
+Bearer token for POST routes lives in process memory (``set_http_token``). ``raspberry.network_tx_bridge``
+generates one token, starts this server in a thread, and sends the same token in the TCP joystick handshake.
 
 Routes (JSON):
 
@@ -30,11 +30,26 @@ import logging
 import os
 import secrets
 import signal
+import sys
 import threading
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar, Optional, Tuple
 from urllib.parse import urlparse
+
+_RASPBERRY_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_RASPBERRY_DIR, ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from common.box_api import (  # noqa: E402
+    API_CAMERA,
+    API_DRONE_POWER,
+    API_LED,
+    API_SERVO,
+    API_STATUS,
+    BOX_HTTP_PORT,
+)
 
 if __package__:
     from .box_control import BoxController
@@ -42,15 +57,6 @@ else:
     from box_control import BoxController
 
 _LOG = logging.getLogger(__name__)
-
-
-BOX_HTTP_PORT = 50502
-
-API_STATUS = "/api/status"
-API_LED = "/api/led"
-API_SERVO = "/api/servo"
-API_CAMERA = "/api/camera"
-API_DRONE_POWER = "/api/drone-power"
 
 
 class BoxServerState:
@@ -89,7 +95,7 @@ _http_token: str = ""
 
 
 def set_http_token(token: str) -> None:
-    """Set bearer token for POST routes (called by ``network_tx_bridge`` before ``main()``)."""
+    """Set bearer token for POST routes (called by ``raspberry.network_tx_bridge`` before ``main()``)."""
     global _http_token
     _http_token = (token or "").strip()
 

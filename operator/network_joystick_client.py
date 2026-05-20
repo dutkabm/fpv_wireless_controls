@@ -27,8 +27,10 @@ if sys.platform == "darwin" and "SDL_VIDEODRIVER" not in os.environ:
 import pygame
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
+_REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+for _path in (_REPO_ROOT, SCRIPT_DIR):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 from modules.joystick import (
     ButtonToggleLatch,
@@ -40,7 +42,7 @@ from modules.joystick import (
     open_joystick,
     prune_joystick_mappings,
 )
-from modules.network import (
+from common.network import (
     DEFAULT_HANDSHAKE_TCP_PORT,
     DEFAULT_UDP_CHANNEL_PORT,
     scan_tx_bridges,

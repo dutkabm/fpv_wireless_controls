@@ -395,9 +395,8 @@ def merge_default_joystick_mappings(
 ) -> int:
     """Map any physical control not listed in controller_map to the next free RC channel (1..16).
 
-    Same idea as assigning inputs in ``minirex_pygame_no_config_file.py``: axes, buttons, and hat
-    directions that have no INI entry still drive spare outputs so CH5+ are not stuck at 1500.
-    Explicit INI mappings are kept; only missing keys get auto channels.
+    Axes, buttons, and hat directions without an INI entry still map to spare channels so CH5+
+    are not stuck at 1500. Explicit INI mappings are kept; only missing keys get auto channels.
     """
     if joystick is None:
         return 0

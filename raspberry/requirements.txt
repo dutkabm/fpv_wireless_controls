@@ -1,4 +1,6 @@
-# Pi: box_control / models / video / box_server (stdlib HTTP; optional system rpicam-vid)
+# Pi: network_tx_bridge, box_control, box_server, video
+# Run: python3 -m raspberry.network_tx_bridge  |  python3 -m raspberry.box_server
+pyserial>=3.5
 # Blinka imports RPi.GPIO on Pi when opening I2C via `import board`
 RPi.GPIO>=0.7.1
 adafruit-blinka>=8.20.0

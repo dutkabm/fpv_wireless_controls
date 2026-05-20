@@ -6,20 +6,18 @@
 from __future__ import annotations
 
 import json
-import sys
 import urllib.error
 import urllib.request
-from pathlib import Path
 from typing import Any, Dict, Optional
 
-
-BOX_HTTP_PORT = 50502
-
-API_STATUS = "/api/status"
-API_LED = "/api/led"
-API_SERVO = "/api/servo"
-API_CAMERA = "/api/camera"
-API_DRONE_POWER = "/api/drone-power"
+from common.box_api import (
+    API_CAMERA,
+    API_DRONE_POWER,
+    API_LED,
+    API_SERVO,
+    API_STATUS,
+    BOX_HTTP_PORT,
+)
 
 
 class BoxRemoteClient:

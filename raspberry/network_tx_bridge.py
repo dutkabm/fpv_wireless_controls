@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Raspberry Pi (or any Linux host): receive joystick channel frames over UDP, forward CRSF
-to the transmitter module over serial — same CRSF framing as minirex_headless.py.
+Raspberry Pi TX bridge: receive joystick channel frames over UDP, forward CRSF to the TX module.
 
-Run near the scripts directory so controller_map serial settings are optional for autodetect;
-serial port defaults follow General.serial_port when a config file exists.
+Run from the repo root::
+
+    python3 -m raspberry.network_tx_bridge
+
+Serial settings default from ``operator/controller_map.txt`` on the Pi if present (``--config``); not a Python import of ``operator``.
+Starts ``raspberry.box_server`` in-process (shared box HTTP token in handshake).
 """
 
 from __future__ import annotations
@@ -20,12 +23,18 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
-from enum import IntEnum
 from typing import List, Optional
 
 import serial
 
-from modules.network import (
+_RASPBERRY_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_RASPBERRY_DIR, ".."))
+_OPERATOR_DIR = os.path.join(_REPO_ROOT, "operator")
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from common.crsf import pwm_channels_to_crsf_packet  # noqa: E402
+from common.network import (  # noqa: E402
     CHANNEL_PACKET_MAGIC,
     CHANNEL_PAYLOAD_LEN,
     DEFAULT_HANDSHAKE_TCP_PORT,
@@ -33,7 +42,7 @@ from modules.network import (
     format_handshake_ok,
     unpack_channel_datagram,
 )
-from modules.tx_port import autodetect_serial_port, is_autoselect_serial_port
+from common.tx_port import autodetect_serial_port, is_autoselect_serial_port  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -42,76 +51,8 @@ def _rx_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
-# recvfrom buffer larger than our frame so oversize probes are visible in DEBUG logs.
 _UDP_RECV_MAX = 2048
-
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
-_DEFAULT_BRIDGE_CONFIG = os.path.join(_SCRIPT_DIR, "controller_map.txt")
-
-CRSF_SYNC_BYTE = 0xC8
-
-
-class CRSFPacketType(IntEnum):
-    RC_CHANNELS_PACKED = 0x16
-
-
-def crc8_dvb_s2(data):
-    crc = 0
-    for b in data:
-        crc ^= b
-        for _ in range(8):
-            if crc & 0x80:
-                crc = ((crc << 1) ^ 0xD5) & 0xFF
-            else:
-                crc = (crc << 1) & 0xFF
-    return crc
-
-
-def packCrsfToBytes(channels):
-    if len(channels) != 16:
-        raise ValueError("CRSF must have 16 channels")
-    result = bytearray()
-    bit_buffer = 0
-    bits_in_buffer = 0
-    for ch in channels:
-        bit_buffer |= (int(ch) & 0x7FF) << bits_in_buffer
-        bits_in_buffer += 11
-        while bits_in_buffer >= 8:
-            result.append(bit_buffer & 0xFF)
-            bit_buffer >>= 8
-            bits_in_buffer -= 8
-    if bits_in_buffer > 0:
-        result.append(bit_buffer & 0xFF)
-    return bytes(result)
-
-
-def channelsCrsfToChannelsPacket(channels):
-    payload = bytearray([CRSFPacketType.RC_CHANNELS_PACKED])
-    payload += packCrsfToBytes(channels)
-    length = len(payload) + 1
-    packet = bytearray([CRSF_SYNC_BYTE, length]) + payload
-    crc = crc8_dvb_s2(packet[2:])
-    packet.append(crc)
-    return packet
-
-
-def map_to_crsf(us_pwm: int) -> int:
-    """Map RC PWM µs (1000–2000) to CRSF 0x16 legacy ticks (172–1811 ↔ ~988–2012 µs at RX).
-
-    The old 0–2047 mapping put endpoints outside the range many TX modules decode correctly,
-    which often breaks aux / digital channels (typically CH5+). See TBS CRSF 0x16 and
-    Betaflight crsfReadRawRC LEGACY scale (172/992/1811).
-    """
-    pwm = max(1000, min(2000, int(us_pwm)))
-    ticks = 172.0 + (pwm - 988) * (1811 - 172) / (2012 - 988)
-    return max(172, min(1811, int(round(ticks))))
-
-
-def pwm_channels_to_crsf_packet(channels_1000_2000: List[int]) -> bytes:
-    capped = [max(1000, min(2000, int(c))) for c in channels_1000_2000]
-    crsfs = [map_to_crsf(c) for c in capped]
-    return bytes(channelsCrsfToChannelsPacket(crsfs))
+_DEFAULT_BRIDGE_CONFIG = os.path.join(_OPERATOR_DIR, "controller_map.txt")
 
 
 def _strip_inline_comment(value: Optional[str]) -> str:
@@ -155,14 +96,8 @@ def _tcp_port_available(bind: str, port: int) -> bool:
 
 
 def _start_box_http_server(token: str) -> None:
-    """Run ``raspberry.box_server`` in-process so it shares the in-memory token."""
-    if _REPO_ROOT not in sys.path:
-        sys.path.insert(0, _REPO_ROOT)
-    try:
-        from raspberry import box_server as box_server_mod
-    except ImportError as e:
-        log.warning("Could not import raspberry.box_server (%s); box HTTP disabled", e)
-        return
+    """Run ``box_server`` in-process so it shares the in-memory token."""
+    from . import box_server as box_server_mod
 
     bind = "0.0.0.0"
     port = box_server_mod.BOX_HTTP_PORT
@@ -186,7 +121,7 @@ def _start_box_http_server(token: str) -> None:
     log.info("Box HTTP API thread started on port %s", port)
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser(description="UDP → CRSF serial bridge for Pi + TX module")
     ap.add_argument("--bind", default="0.0.0.0", help="UDP / TCP bind address")
     ap.add_argument(
@@ -340,7 +275,7 @@ def main():
     latest: Optional[List[int]] = None
     last_rx = 0
 
-    def recv_loop():
+    def recv_loop() -> None:
         nonlocal latest, last_rx
         while True:
             try:

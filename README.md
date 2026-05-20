@@ -13,9 +13,7 @@ This project is built off the [ExpressLRS](https://www.expresslrs.org/) (ELRS) a
 ELRS & CRSF have widespread adoption in the FPV drone community with an abundance of support, documentation, and budget-friendly hardware availability.
 This project is yet another passion project with the goal to utilize and expand the use of these robust control systems.
 
-## Flow Diagram
-
-![Overview Diagram](./images/overview.png)
+## Flow
 
 The primary goal of Mini Rex is to have an easily implementable solution to wirelessly transmit any input to any output device. This project is split into two parts, joined together by the ELRS/CRSF wireless transmission:
 
@@ -134,19 +132,14 @@ Should the TX Module need external power, it can be powered by the XT-30 plug (i
 
 For this connection method, the [FTDI Virtual Com Port Driver](https://ftdichip.com/drivers/) and the [FT_PROG tool](https://ftdichip.com/utilities/#ft_prog) are probably needed to be installed.
 
-Follow the wiring diagrams below (depending on your module type) to hook up to the FTDI adapter. Have a common ground between all parts.
+Follow the wiring instructions for your module type (see the Kaack repository above) to hook up to the FTDI adapter. Have a common ground between all parts.
 * **Note:** A battery is not required, but is highly recommended because most FTDI adapters can only output about 500ma current through VCC, causing higher-power TX modules to reboot. If you choose to not use a battery, plug in the VBAT on the JR Bay TX to the VCC on the FTDI adapter and connect grounds. **DO NOT CONNECT BOTH VCC OF THE ADAPTER AND VBAT OF THE BATTERY**
 
 Next, plug in the FTDI adapter over USB to your computer. Using the FT_Prog tool set, the setting of the adapter to run Inverted Half-Duplext UART. Both RX and TX signals are inverted and travel over the TX wire. This should make the TX module ready to work using the FTDI adapter.
 
-![Transmitter FTDI Wiring Diagram](./images/txwiring.png)
-
-
 ## RX Side Wiring
 
 The second section of wiring is for the Raspberry Pi Pico device and the RX chip. This simply follows the wiring set out by the mikeneiderhauser [CRSFJoystick](https://github.com/mikeneiderhauser/CRSFJoystick) repository. Wire the CRSF pins to the UART TX and RX of the Pico, and supply power to the chip.
-
-![Pico Wiring Diagram](./images/picowiring.png)
 
 ### PWM Output
 
@@ -157,19 +150,27 @@ If you would like PWM output for your device, at the moment, purchase a RX chip 
 
 ## TX Side
 
-The Python transmission software can be run either as an interactive PyGame script, or as a headless terminal script.
+The Python transmission software uses the network joystick client on a PC/laptop and the TX bridge on the Pi.
 
-### PyGame Script: `minirex_pygame.py`
+### Network joystick client: `operator/network_joystick_client.py`
 
-This script serves as an interactive interface to map a controller to CRSF channels. On startup, a user can open a controller and serial device by clicking on the boxes for those devices. Then, the interactive interface shows live controller values and channel values. Clicking on a controller value allows it to be mapped to any corresponding CRSF channel. Inputs may also be checked to be inverted so they always work intuitively.
+CustomTkinter UI: map a gamepad to 16 RC channels (`controller_map.txt`), TCP-connect to the Pi bridge, UDP-send channel frames. Includes a **Box** tab for enclosure status and controls (`raspberry.box_server`).
 
-For regular use, the `controller_mapping.txt` file can be placed in the same directory as the PyGame script, and on startup will load the values given in the text file, auto-loading a controller configuration. This file is pre-filled with a default configuration.
+```bash
+pip install -r operator/requirements.txt
+python operator/network_joystick_client.py
+```
 
-![PyGame Example](./images/pygame_window.png)
+### Pi TX bridge: `raspberry/network_tx_bridge.py`
 
-### Headless Script: `minirex_headless.py`
+Receives UDP channel packets from the client and forwards CRSF to the transmitter over USB serial. Also starts `raspberry.box_server` in-process.
 
-This script is the exact same as the above interactive PyGame, but is designed to be run through terminal. This has no interactive elements and requires the loading of mappings and devices from the `controller_mapping.txt` file.
+```bash
+pip install -r raspberry/requirements.txt
+python3 -m raspberry.network_tx_bridge
+```
+
+Shared protocol (no cross-import between sides): `common/crsf.py`, `common/network.py`, `common/box_api.py`. Client-only: `operator/modules/joystick.py`, `operator/modules/ui.py`.
 
 ### **Protocol Note** 
 Depending on how the channel configuration is set up in the Radio TX hardware, the final output device may display different CRSF values. TBS Crossfire systems typically send a full 16 channels, though ELRS is designed to be more efficient. So it may be set up differently, read [this ELRS documentation](https://www.expresslrs.org/software/switch-config/) for switch configurations.
