@@ -87,11 +87,8 @@ def main():
         default=5.0,
         help="Max print lines per second with --print-raw (default 5)",
     )
-    ap.add_argument("--box-poll-ms", type=int, default=1500, help="Box status poll interval in ms (min 500)")
     ap.add_argument("--box-http-timeout", type=float, default=5.0, help="Box HTTP request timeout (s)")
     args = ap.parse_args()
-    if args.box_poll_ms < 500:
-        args.box_poll_ms = 500
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
@@ -363,6 +360,20 @@ def main():
         pwm = get_pwm_channels_from_joystick(
             joy_ref.joystick, axis_map, button_map, hat_map, toggle_latch
         )
+
+        box_tab_now = False
+        try:
+            box_tab_now = view.tabs.get() == "Box"
+        except Exception:
+            pass
+        if box_tab_now != view._prev_box_tab_selected:
+            view._prev_box_tab_selected = box_tab_now
+            view.box_panel.set_box_tab_visible(box_tab_now)
+            if box_tab_now:
+                view.send_btn.grid_remove()
+            else:
+                view.send_btn.grid(row=1, column=0, padx=16, pady=8, sticky="w")
+
         j = joy_ref.joystick
         if j is not None:
             for key, lbl in view.mapping_live_labels.items():
@@ -426,10 +437,11 @@ def main():
                     status_text = "Send error"
 
         view.status_lbl.configure(text=_status_display())
-        if sending:
-            view.send_btn.configure(fg_color="seagreen", hover_color="darkgreen")
-        else:
-            view.send_btn.configure(fg_color="gray40", hover_color="gray35")
+        if not box_tab_now:
+            if sending:
+                view.send_btn.configure(fg_color="seagreen", hover_color="darkgreen")
+            else:
+                view.send_btn.configure(fg_color="gray40", hover_color="gray35")
         root.after(16, tick)
 
     def on_closing():

@@ -519,6 +519,8 @@ class NetworkJoystickUI:
             args=args,
             get_target_ip=lambda: self.ip_entry.get(),
         )
+        self._prev_box_tab_selected = False
+
         self.send_var = ctk.StringVar(value="Start sending")
         self.send_btn = ctk.CTkButton(
             root,
@@ -529,13 +531,5 @@ class NetworkJoystickUI:
         )
         self.send_btn.grid(row=1, column=0, padx=16, pady=8, sticky="w")
 
-        self.hint = ctk.CTkLabel(
-            root,
-            text="Connect · Map table CH1–16 · Trig on a button toggles that channel 1000/2000 on each press · --hz · Box tab = LED / servo / video",
-            font=ctk.CTkFont(size=12),
-            text_color="gray60",
-        )
-        self.hint.grid(row=2, column=0, padx=16, pady=(0, 4), sticky="w")
-
         self.status_lbl = ctk.CTkLabel(root, text="", font=ctk.CTkFont(size=13), anchor="w")
-        self.status_lbl.grid(row=3, column=0, padx=16, pady=(4, 16), sticky="ew")
+        self.status_lbl.grid(row=2, column=0, padx=16, pady=(4, 16), sticky="ew")

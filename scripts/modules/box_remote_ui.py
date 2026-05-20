@@ -14,6 +14,7 @@ import tkinter.messagebox as tk_messagebox
 from modules.box_remote import BOX_HTTP_PORT, BoxRemoteClient
 
 VIDEO_STREAM_PORT = 8888
+TAB_POLL_MS = 3000  # Box tab visible: GET /api/status interval
 
 
 class BoxRemotePanel:
@@ -35,7 +36,7 @@ class BoxRemotePanel:
         self.args = args
         self._get_target_ip = get_target_ip
         self.client: BoxRemoteClient | None = None
-        self.poll_ms = max(500, int(getattr(args, "box_poll_ms", 1500)))
+        self._box_tab_visible = False
         self._poll_after_id: Optional[str] = None
         self._last_status: dict[str, Any] = {}
 
@@ -147,7 +148,9 @@ class BoxRemotePanel:
         self.client = c
         self._apply_status(d)
         self._set_controls_enabled(True)
-        self._schedule_poll()
+        if self._box_tab_visible:
+            self._cancel_poll_timer()
+            self._poll_after_id = self._root.after(TAB_POLL_MS, self._poll_tick)
         return True
 
     def _timeout(self) -> float:
@@ -164,17 +167,31 @@ class BoxRemotePanel:
             return None
         return BoxRemoteClient(host, BOX_HTTP_PORT, token=self._box_token, timeout=self._timeout())
 
-    def disconnect(self) -> None:
-        """Stop polling and clear box HTTP session (e.g. joystick Disconnect)."""
-        self._on_disconnect()
+    def set_box_tab_visible(self, visible: bool) -> None:
+        """Start/stop status polling every ``TAB_POLL_MS`` while Box tab is selected."""
+        self._box_tab_visible = bool(visible)
+        if not self._box_tab_visible:
+            self._cancel_poll_timer()
+            return
+        if self.client is None:
+            return
+        self._cancel_poll_timer()
+        self._poll_after_id = self._root.after(0, self._poll_tick)
 
-    def _on_disconnect(self) -> None:
+    def _cancel_poll_timer(self) -> None:
         if self._poll_after_id is not None:
             try:
                 self._root.after_cancel(self._poll_after_id)
             except Exception:
                 pass
             self._poll_after_id = None
+
+    def disconnect(self) -> None:
+        """Stop polling and clear box HTTP session (e.g. joystick Disconnect)."""
+        self._on_disconnect()
+
+    def _on_disconnect(self) -> None:
+        self._cancel_poll_timer()
         self.client = None
         self._last_status = {}
         self._set_controls_enabled(False)
@@ -186,23 +203,17 @@ class BoxRemotePanel:
         self._stop_video_player()
         self.disconnect()
 
-    def _schedule_poll(self) -> None:
-        if self.client is None:
+    def _poll_tick(self) -> None:
+        self._poll_after_id = None
+        if not self._box_tab_visible or self.client is None:
             return
-
-        def tick() -> None:
-            self._poll_after_id = None
-            if self.client is None:
-                return
-            d = self.client.get_status()
-            if not d.get("ok"):
-                self._on_disconnect()
-                return
-            self._apply_status(d)
-            self._set_controls_enabled(True)
-            self._poll_after_id = self._root.after(self.poll_ms, tick)
-
-        self._poll_after_id = self._root.after(self.poll_ms, tick)
+        d = self.client.get_status()
+        if not d.get("ok"):
+            self._on_disconnect()
+            return
+        self._apply_status(d)
+        self._set_controls_enabled(True)
+        self._poll_after_id = self._root.after(TAB_POLL_MS, self._poll_tick)
 
     def _apply_status(self, d: dict) -> None:
         prev_cam = bool(self._last_status.get("camera_streaming"))
