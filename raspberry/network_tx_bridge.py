@@ -6,6 +6,10 @@ Run from the repo root::
 
     python3 -m raspberry.network_tx_bridge
 
+or::
+
+    python3 raspberry/network_tx_bridge.py
+
 Serial settings default from ``operator/controller_map.txt`` on the Pi if present (``--config``); not a Python import of ``operator``.
 Starts ``raspberry.box_server`` in-process (shared box HTTP token in handshake).
 """
@@ -95,9 +99,21 @@ def _tcp_port_available(bind: str, port: int) -> bool:
         probe.close()
 
 
+def _import_box_server():
+    """Load ``box_server`` when run as ``python -m raspberry.network_tx_bridge`` or as a script path."""
+    try:
+        from . import box_server as mod
+
+        return mod
+    except ImportError:
+        from raspberry import box_server as mod
+
+        return mod
+
+
 def _start_box_http_server(token: str) -> None:
     """Run ``box_server`` in-process so it shares the in-memory token."""
-    from . import box_server as box_server_mod
+    box_server_mod = _import_box_server()
 
     bind = "0.0.0.0"
     port = box_server_mod.BOX_HTTP_PORT
