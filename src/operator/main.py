@@ -3,15 +3,24 @@
 PC / laptop: read a local joystick (controller_map.txt + on-screen map table), show 16 channel meters,
 TCP-handshake with the Pi bridge on Connect, then UDP-send 16-channel frames at the configured rate.
 Includes a Box tab for ``raspberry.box_server`` (status, LED, servo, camera stream URL).
+
+From the repo root::
+
+    python src/operator/main.py
 """
 
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
+_OPERATOR_DIR = Path(__file__).resolve().parent
+_SRC_ROOT = _OPERATOR_DIR.parent
+
 import argparse
 import logging
-import os
 import socket
-import sys
 import threading
 import time
 from typing import Optional
@@ -26,22 +35,13 @@ if sys.platform == "darwin" and "SDL_VIDEODRIVER" not in os.environ:
 
 import pygame
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
-for _path in (_REPO_ROOT, SCRIPT_DIR):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
+_op = str(_OPERATOR_DIR)
+_src = str(_SRC_ROOT)
+if _op not in sys.path:
+    sys.path.insert(0, _op)
+if _src not in sys.path:
+    sys.path.append(_src)
 
-from modules.joystick import (
-    ButtonToggleLatch,
-    apply_rc_preset_mappings,
-    get_pwm_channels_from_joystick,
-    joy_menu_values,
-    load_controller_config,
-    merge_default_joystick_mappings,
-    open_joystick,
-    prune_joystick_mappings,
-)
 from common.network import (
     DEFAULT_HANDSHAKE_TCP_PORT,
     DEFAULT_UDP_CHANNEL_PORT,
@@ -52,16 +52,26 @@ from common.network import (
     validate_ipv4_netmask,
     validate_ipv4_text,
 )
+from modules.joystick import (
+    ButtonToggleLatch,
+    apply_rc_preset_mappings,
+    get_pwm_channels_from_joystick,
+    joy_menu_values,
+    load_controller_config,
+    merge_default_joystick_mappings,
+    open_joystick,
+    prune_joystick_mappings,
+)
 from modules.ui import JoystickRef, NetworkJoystickUI
 
 _LOG = logging.getLogger(__name__)
 
 
 def main():
-    default_config = os.path.join(SCRIPT_DIR, "controller_map.txt")
+    default_config = str(_OPERATOR_DIR / "controller_map.txt")
 
-    ap = argparse.ArgumentParser(description="Joystick → UDP client for Mini Rex network bridge")
-    ap.add_argument("--config", default=default_config, help="Mapping INI path (Mini Rex joystick map)")
+    ap = argparse.ArgumentParser(description="Joystick → UDP client for FPV wireless TX bridge")
+    ap.add_argument("--config", default=default_config, help="Mapping INI path (controller_map.txt)")
     ap.add_argument("--target-ip", default="", help="Default Pi / bridge IP (editable in UI)")
     ap.add_argument(
         "--target-port",

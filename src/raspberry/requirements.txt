@@ -1,5 +1,5 @@
-# Pi: network_tx_bridge, box_control, box_server, video
-# Run: python3 -m raspberry.network_tx_bridge  |  python3 -m raspberry.box_server
+# Pi: main (TX bridge), box_control, box_server, video
+# Run: PYTHONPATH=src python3 -m raspberry.main  |  PYTHONPATH=src python3 -m raspberry.box_server
 pyserial>=3.5
 # Blinka imports RPi.GPIO on Pi when opening I2C via `import board`
 RPi.GPIO>=0.7.1

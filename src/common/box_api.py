@@ -1,4 +1,4 @@
-"""HTTP paths and port for ``raspberry.box_server`` ↔ ``operator`` box client (must stay in sync)."""
+"""HTTP paths and port for ``raspberry.box_server`` ↔ operator box UI (must stay in sync)."""
 
 BOX_HTTP_PORT = 50502
 

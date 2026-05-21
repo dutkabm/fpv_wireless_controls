@@ -1,1 +1,1 @@
-"""Shared protocol and API constants for ``operator`` (client) and ``raspberry`` (Pi)."""
+"""Shared protocol and API constants for ``operator`` (PC) and ``raspberry`` (Pi)."""

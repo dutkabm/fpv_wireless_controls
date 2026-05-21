@@ -2,15 +2,11 @@
 """
 Raspberry Pi TX bridge: receive joystick channel frames over UDP, forward CRSF to the TX module.
 
-Run from the repo root::
+From the repo root::
 
-    python3 -m raspberry.network_tx_bridge
+    PYTHONPATH=src python3 -m raspberry.main
 
-or::
-
-    python3 raspberry/network_tx_bridge.py
-
-Serial settings default from ``operator/controller_map.txt`` on the Pi if present (``--config``); not a Python import of ``operator``.
+Serial settings default from ``src/operator/controller_map.txt`` on the Pi if present (``--config``).
 Starts ``raspberry.box_server`` in-process (shared box HTTP token in handshake).
 """
 
@@ -27,18 +23,17 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional
 
 import serial
 
-_RASPBERRY_DIR = os.path.dirname(os.path.abspath(__file__))
-_REPO_ROOT = os.path.abspath(os.path.join(_RASPBERRY_DIR, ".."))
-_OPERATOR_DIR = os.path.join(_REPO_ROOT, "operator")
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+_SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
-from common.crsf import pwm_channels_to_crsf_packet  # noqa: E402
-from common.network import (  # noqa: E402
+from common.crsf import pwm_channels_to_crsf_packet
+from common.network import (
     CHANNEL_PACKET_MAGIC,
     CHANNEL_PAYLOAD_LEN,
     DEFAULT_HANDSHAKE_TCP_PORT,
@@ -46,7 +41,7 @@ from common.network import (  # noqa: E402
     format_handshake_ok,
     unpack_channel_datagram,
 )
-from common.tx_port import autodetect_serial_port, is_autoselect_serial_port  # noqa: E402
+from common.tx_port import autodetect_serial_port, is_autoselect_serial_port
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +51,7 @@ def _rx_utc_iso() -> str:
 
 
 _UDP_RECV_MAX = 2048
-_DEFAULT_BRIDGE_CONFIG = os.path.join(_OPERATOR_DIR, "controller_map.txt")
+_DEFAULT_BRIDGE_CONFIG = str(_SRC_ROOT / "operator" / "controller_map.txt")
 
 
 def _strip_inline_comment(value: Optional[str]) -> str:
@@ -99,21 +94,9 @@ def _tcp_port_available(bind: str, port: int) -> bool:
         probe.close()
 
 
-def _import_box_server():
-    """Load ``box_server`` when run as ``python -m raspberry.network_tx_bridge`` or as a script path."""
-    try:
-        from . import box_server as mod
-
-        return mod
-    except ImportError:
-        from raspberry import box_server as mod
-
-        return mod
-
-
 def _start_box_http_server(token: str) -> None:
     """Run ``box_server`` in-process so it shares the in-memory token."""
-    box_server_mod = _import_box_server()
+    from raspberry import box_server as box_server_mod
 
     bind = "0.0.0.0"
     port = box_server_mod.BOX_HTTP_PORT
@@ -161,7 +144,7 @@ def main() -> None:
     ap.add_argument(
         "--config",
         default=_DEFAULT_BRIDGE_CONFIG,
-        help="INI file path for baud/serial hints (Mini Rex controller_map)",
+        help="INI file path for baud/serial hints (controller_map.txt)",
     )
     ap.add_argument("--hz", type=float, default=50.0, help="CRSF transmit rate toward TX")
     ap.add_argument("--failsafe-ms", type=float, default=500.0, help="Hold last channels; fail-safe defaults after this latency")

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-HTTP JSON API for :class:`raspberry.box_control.BoxController` (LAN remote; used from ``network_joystick_client`` Box tab).
+HTTP JSON API for :class:`raspberry.box_control.BoxController` (LAN remote; used from ``operator.main`` Box tab).
 
-Run from the repo root on the Pi::
+From the repo root on the Pi::
 
-    python3 -m raspberry.box_server
+    PYTHONPATH=src python3 -m raspberry.box_server
 
 Environment:
 
 - ``BOX_HTTP_BIND`` — listen address (default ``0.0.0.0``).
 - ``BOX_HTTP_PORT`` — port (default ``50502``).
 
-Bearer token for POST routes lives in process memory (``set_http_token``). ``raspberry.network_tx_bridge``
+Bearer token for POST routes lives in process memory (``set_http_token``). ``raspberry.main``
 generates one token, starts this server in a thread, and sends the same token in the TCP joystick handshake.
 
 Routes (JSON):
@@ -34,15 +34,15 @@ import sys
 import threading
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, ClassVar, Optional, Tuple
 from urllib.parse import urlparse
 
-_RASPBERRY_DIR = os.path.dirname(os.path.abspath(__file__))
-_REPO_ROOT = os.path.abspath(os.path.join(_RASPBERRY_DIR, ".."))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+_SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
-from common.box_api import (  # noqa: E402
+from common.box_api import (
     API_CAMERA,
     API_DRONE_POWER,
     API_LED,
@@ -95,7 +95,7 @@ _http_token: str = ""
 
 
 def set_http_token(token: str) -> None:
-    """Set bearer token for POST routes (called by ``raspberry.network_tx_bridge`` before ``main()``)."""
+    """Set bearer token for POST routes (called by ``raspberry.main`` before ``main()``)."""
     global _http_token
     _http_token = (token or "").strip()
 

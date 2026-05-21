@@ -1,4 +1,4 @@
-"""CustomTkinter UI for ``network_joystick_client`` (layout, channel meters, mapping table)."""
+"""CustomTkinter UI for ``operator.main`` (layout, channel meters, mapping table)."""
 
 from __future__ import annotations
 
