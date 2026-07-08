@@ -1,1 +1,1 @@
-"""Ground-station joystick client (``operator.main``)."""
+"""Ground-station joystick client (``ground_station.main``)."""

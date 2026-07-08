@@ -6,7 +6,7 @@ Includes a Box tab for ``raspberry.box_server`` (status, LED, servo, camera stre
 
 From the repo root::
 
-    python src/operator/main.py
+    python src/ground_station/main.py
 """
 
 from __future__ import annotations

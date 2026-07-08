@@ -88,6 +88,8 @@ class BoxRemotePanel:
             ("Pressure hPa", "pressure_hpa"),
             ("Box V", "box_battery_v"),
             ("Drone V", "drone_battery_v"),
+            ("Env error", "env_error"),
+            ("Batt error", "battery_error"),
             ("Camera", "camera_streaming"),
             ("LED", "led_on"),
             ("Servo", "servo_active"),

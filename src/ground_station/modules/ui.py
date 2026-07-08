@@ -1,4 +1,4 @@
-"""CustomTkinter UI for ``operator.main`` (layout, channel meters, mapping table)."""
+"""CustomTkinter UI for ``ground_station.main`` (layout, channel meters, mapping table)."""
 
 from __future__ import annotations
 

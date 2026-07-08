@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HTTP JSON API for :class:`raspberry.box_control.BoxController` (LAN remote; used from ``operator.main`` Box tab).
+HTTP JSON API for :class:`raspberry.box_control.BoxController` (LAN remote; used from ``ground_station.main`` Box tab).
 
 From the repo root on the Pi::
 

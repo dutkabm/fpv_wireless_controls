@@ -151,9 +151,9 @@ CustomTkinter UI: map a gamepad to 16 RC channels (`src/operator/controller_map.
 ```bash
 cd fpv_wireless_controls
 python3 -m venv .venv && source .venv/bin/activate   # optional
-pip install -r src/operator/requirements.txt
+pip install -r src/ground_station/requirements.txt
 
-python src/operator/main.py
+python src/ground_station/main.py
 ```
 
 Dependencies: `customtkinter`, `pygame` (see `src/operator/requirements.txt`).
@@ -164,12 +164,17 @@ Receives UDP channel packets from the client and forwards CRSF to the transmitte
 
 Serial/baud defaults come from `src/operator/controller_map.txt` on the Pi if present (`--config`); that file is read as data only, not imported as Python.
 
+Raspberry Pi OS (Bookworm+) blocks system-wide `pip install` (PEP 668). Use a venv:
+
 ```bash
-cd fpv_wireless_controls
+cd ~/Documents/fpv_wireless_controls
+sudo apt install -y python3-venv python3-full   # once, if needed
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r src/raspberry/requirements.txt
 
 export PYTHONPATH=src    # Pi only; safe for raspberry.*
-python3 -m raspberry.main
+python -m raspberry.main
 ```
 
 Do not run a separate `box_server` while the bridge is running (both use port `50502` by default).
@@ -177,7 +182,8 @@ Do not run a separate `box_server` while the bridge is running (both use port `5
 Optional standalone box API (debug or box-only Pi):
 
 ```bash
-PYTHONPATH=src python3 -m raspberry.box_server
+source .venv/bin/activate
+PYTHONPATH=src python -m raspberry.box_server
 ```
 
 Pi dependencies: `pyserial`, GPIO/sensor stack in `src/raspberry/requirements.txt` (intended for Raspberry Pi OS).

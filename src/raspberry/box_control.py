@@ -45,15 +45,26 @@ def _open_i2c():
 
         return ExtendedI2C(bid, frequency=400_000)
     except ImportError:
+        pass
+    try:
         import board
         import busio
 
         return busio.I2C(board.SCL, board.SDA, frequency=400_000)
+    except ImportError as e:
+        raise ImportError(
+            "I2C libs missing (need adafruit-blinka + adafruit-extended-bus). "
+            "On the Pi: pip3 install -r src/raspberry/requirements.txt"
+        ) from e
 
 
 def _probe_bme280_or_bmp280(i2c):
     """Return (sensor, kind) where kind is 'BME280' or 'BMP280'."""
-    import adafruit_bme280
+    # Newer adafruit-circuitpython-bme280 nests the class under ``basic`` / ``advanced``.
+    try:
+        from adafruit_bme280 import basic as adafruit_bme280
+    except ImportError:
+        import adafruit_bme280  # older flat package layout
     import adafruit_bmp280
 
     for addr in (0x77, 0x76):

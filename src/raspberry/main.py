@@ -6,7 +6,7 @@ From the repo root::
 
     PYTHONPATH=src python3 -m raspberry.main
 
-Serial settings default from ``src/operator/controller_map.txt`` on the Pi if present (``--config``).
+Serial settings default from ``src/ground_station/controller_map.txt`` on the Pi if present (``--config``).
 Starts ``raspberry.box_server`` in-process (shared box HTTP token in handshake).
 """
 
@@ -51,7 +51,7 @@ def _rx_utc_iso() -> str:
 
 
 _UDP_RECV_MAX = 2048
-_DEFAULT_BRIDGE_CONFIG = str(_SRC_ROOT / "operator" / "controller_map.txt")
+_DEFAULT_BRIDGE_CONFIG = str(_SRC_ROOT / "ground_station" / "controller_map.txt")
 
 
 def _strip_inline_comment(value: Optional[str]) -> str:
