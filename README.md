@@ -70,7 +70,7 @@ Following the flowchart above, this is a full list of hardware.
 The input processor device requires most of the software, including device drivers and the ability to run Python.
 
 - `Python 3.10` or higher (3.11+ recommended)
-  - **Ground station** (`src/operator/`): `customtkinter`, `pygame` — see `src/operator/requirements.txt`
+  - **Ground station** (`src/ground_station/`): `customtkinter`, `pygame` — see `src/ground_station/requirements.txt`
   - **Pi bridge / box** (`src/raspberry/`): `pyserial`, GPIO/sensor packages — see `src/raspberry/requirements.txt`
   - Main project development was done in Python 3.11–3.12; other versions may work but are untested.
 - Depending on connection to TX (explained later), these drivers are necesary:
@@ -136,38 +136,36 @@ The second section of wiring is for the Raspberry Pi Pico device and the RX chip
 
 ## TX Side
 
-The Python transmission stack is split across a **PC/laptop client** and a **Raspberry Pi bridge**. The client reads a local gamepad, sends 16 RC channels over the network, and can control an enclosure “box” over HTTP. The Pi receives those channels, forwards CRSF to the ELRS/Crossfire TX over USB serial, and runs the box HTTP API in the same process as the bridge. Application code lives under `src/` (`common/`, `operator/`, `raspberry/`).
+The Python transmission stack is split across a **PC/laptop client** and a **Raspberry Pi bridge**. The client reads a local gamepad, sends 16 RC channels over the network, and can control an enclosure “box” over HTTP. The Pi receives those channels, forwards CRSF to the ELRS/Crossfire TX over USB serial, and runs the box HTTP API in the same process as the bridge. Application code lives under `src/` (`common/`, `ground_station/`, `raspberry/`).
 
 ### Imports and `PYTHONPATH`
 
-Modules import as `common.`*, `modules.*` (under `operator/`), and `raspberry.*`. The Pi sets `PYTHONPATH=src` from the repo root.
+Modules import as `common.*`, `modules.*` (under `ground_station/`), and `raspberry.*`. The Pi sets `PYTHONPATH=src` from the repo root. On the PC, run the client as a script (below); `src/ground_station/main.py` adds its own directory and `src/` to `sys.path` at startup, so no `PYTHONPATH` is needed.
 
-The folder name `operator/` matches Python’s stdlib `operator` module. On the PC, run the client as a script (below); do **not** set `PYTHONPATH=src` globally.
+### Ground station client (`src/ground_station/main.py`)
 
-### Ground station client (`src/operator/main.py`)
-
-CustomTkinter UI: map a gamepad to 16 RC channels (`src/operator/controller_map.txt`), TCP-connect to the Pi bridge on **Connect**, UDP-send channel frames at the configured rate. **Box** tab: status, LED, servo, drone power, camera stream (via `raspberry.box_server` on the Pi).
+CustomTkinter UI: map a gamepad to 16 RC channels (`src/ground_station/controller_map.txt`), TCP-connect to the Pi bridge on **Connect**, UDP-send channel frames at the configured rate. **Box** tab: status, LED, servo, drone power, camera stream (via `raspberry.box_server` on the Pi).
 
 ```bash
-cd fpv_wireless_controls
+cd fpv-wireless-controls
 python3 -m venv .venv && source .venv/bin/activate   # optional
 pip install -r src/ground_station/requirements.txt
 
 python src/ground_station/main.py
 ```
 
-Dependencies: `customtkinter`, `pygame` (see `src/operator/requirements.txt`).
+Dependencies: `customtkinter`, `pygame` (see `src/ground_station/requirements.txt`).
 
 ### Pi TX bridge (`src/raspberry/main.py`)
 
 Receives UDP channel packets from the client and forwards CRSF to the transmitter over USB serial. Starts `raspberry.box_server` in a background thread and passes the same bearer token in the TCP handshake (`OK <name> <token>`).
 
-Serial/baud defaults come from `src/operator/controller_map.txt` on the Pi if present (`--config`); that file is read as data only, not imported as Python.
+Serial/baud defaults come from `src/ground_station/controller_map.txt` on the Pi if present (`--config`); that file is read as data only, not imported as Python.
 
 Raspberry Pi OS (Bookworm+) blocks system-wide `pip install` (PEP 668). Use a venv:
 
 ```bash
-cd ~/Documents/fpv_wireless_controls
+cd ~/Documents/fpv-wireless-controls
 sudo apt install -y python3-venv python3-full   # once, if needed
 python3 -m venv .venv
 source .venv/bin/activate
