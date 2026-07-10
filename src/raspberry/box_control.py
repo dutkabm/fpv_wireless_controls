@@ -14,9 +14,12 @@ Dataclasses live in ``raspberry.models`` (`DividerConfig`, `SystemStatus`).
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Literal, Optional, Tuple, Union
+
+_LOG = logging.getLogger(__name__)
 
 if __package__:
     from .models import DividerConfig, SystemStatus
@@ -300,6 +303,7 @@ class BoxController:
         self.batteries: Optional[BatteryMonitor] = None
         self.env_error: Optional[str] = None
         self.battery_error: Optional[str] = None
+        self.runtime_sensor_error: Optional[str] = None
         self._i2c = None
 
         self.gpio = BoxOutputs(drone_power_active_high=drone_power_active_high)
@@ -321,6 +325,52 @@ class BoxController:
             self.batteries = BatteryMonitor(self._i2c)
         except Exception as e:
             self.battery_error = str(e)
+
+        self.log_startup_readings()
+
+    def mark_sensor_failure(self, where: str, err: Exception) -> None:
+        """Disable I2C sensors after a runtime bus/device error (disconnect, etc.)."""
+        msg = f"{where}: {err}"
+        if self.runtime_sensor_error is None:
+            _LOG.warning("Sensor hardware error (%s); disabling I2C sensors.", msg)
+        self.runtime_sensor_error = msg
+        self.env_error = self.env_error or msg
+        self.battery_error = self.battery_error or msg
+        if self.batteries is not None:
+            self.batteries.deinit()
+            self.batteries = None
+        if self.env is not None:
+            self.env.deinit()
+            self.env = None
+
+    def log_startup_readings(self) -> None:
+        """Log one-shot sensor snapshot to the console after init."""
+        parts: list[str] = []
+        if self.env is not None:
+            try:
+                t, rh, p = self.env.read()
+                rh_s = f"{rh:.1f} %" if rh is not None else "n/a (BMP280)"
+                parts.append(
+                    f"env({self.env.kind}): T={t:.2f} °C  RH={rh_s}  P={p:.1f} hPa"
+                )
+            except OSError as e:
+                self.mark_sensor_failure("environment", e)
+                parts.append(f"env: I/O error ({e})")
+        elif self.env_error:
+            parts.append(f"env: unavailable ({self.env_error})")
+
+        if self.batteries is not None:
+            try:
+                v_box, v_drone = self.batteries.read_both_v()
+                parts.append(f"ADC: Vbox={v_box:.2f} V  Vdrone={v_drone:.2f} V")
+            except OSError as e:
+                self.mark_sensor_failure("ADC", e)
+                parts.append(f"ADC: I/O error ({e})")
+        elif self.battery_error:
+            parts.append(f"ADC: unavailable ({self.battery_error})")
+
+        if parts:
+            _LOG.info("Sensors at startup — %s", " | ".join(parts))
 
     def camera_stream_start(self, client_host: Optional[str] = None) -> bool:
         """Start the Pi camera UDP stream to ``client_host`` (ground-station IP)."""
@@ -348,17 +398,29 @@ class BoxController:
     def read_environment(self) -> Tuple[float, Optional[float], float]:
         if self.env is None:
             raise RuntimeError(self.env_error or "environment sensor unavailable")
-        return self.env.read()
+        try:
+            return self.env.read()
+        except OSError as e:
+            self.mark_sensor_failure("environment", e)
+            raise RuntimeError(f"environment sensor I/O error: {e}") from e
 
     def read_box_battery_v(self) -> float:
         if self.batteries is None:
             raise RuntimeError(self.battery_error or "battery monitor unavailable")
-        return self.batteries.read_box_battery_v()
+        try:
+            return self.batteries.read_box_battery_v()
+        except OSError as e:
+            self.mark_sensor_failure("ADC", e)
+            raise RuntimeError(f"battery ADC I/O error: {e}") from e
 
     def read_drone_battery_v(self) -> float:
         if self.batteries is None:
             raise RuntimeError(self.battery_error or "battery monitor unavailable")
-        return self.batteries.read_drone_battery_v()
+        try:
+            return self.batteries.read_drone_battery_v()
+        except OSError as e:
+            self.mark_sensor_failure("ADC", e)
+            raise RuntimeError(f"battery ADC I/O error: {e}") from e
 
     def read_system_status(self, into: Optional[SystemStatus] = None) -> SystemStatus:
         """Fill or return a ``SystemStatus`` from current hardware."""
@@ -412,8 +474,18 @@ def box_controller_run() -> None:
     status = SystemStatus()
     try:
         while True:
-            status.refresh(box)
-            rh_s = f"{status.humidity_percent:.1f} %" if status.humidity_percent is not None else "n/a (BMP280)"
+            try:
+                status.refresh(box)
+            except (OSError, RuntimeError) as e:
+                _LOG.warning("Sensor read failed: %s", e)
+                if box.runtime_sensor_error:
+                    _LOG.error("Sensors disabled (%s); exiting.", box.runtime_sensor_error)
+                    break
+            rh_s = (
+                f"{status.humidity_percent:.1f} %"
+                if status.humidity_percent is not None
+                else "n/a (BMP280)"
+            )
             cam_e = status.camera_stream_error or ""
             cam_s = f"cam_on={status.camera_streaming}" + (f" err={cam_e!r}" if cam_e else "")
             print(

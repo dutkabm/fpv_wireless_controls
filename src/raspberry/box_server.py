@@ -156,10 +156,29 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
         self._send_json(code, {"ok": False, "error": msg})
 
     def _write_status_ok(self, box: BoxController) -> None:
-        st = box.read_system_status()
+        try:
+            st = box.read_system_status()
+        except (OSError, RuntimeError) as e:
+            if isinstance(e, OSError):
+                box.mark_sensor_failure("status", e)
+            err = box.runtime_sensor_error or str(e)
+            _LOG.warning("Sensor read failed; reporting hardware_ok=false (%s)", err)
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "hardware_ok": False,
+                    "hardware_error": err,
+                    "sensors_ok": False,
+                },
+            )
+            return
         d = asdict(st)
-        d["hardware_ok"] = True
-        d["sensors_ok"] = box.env is not None and box.batteries is not None
+        sensors_ok = box.env is not None and box.batteries is not None
+        d["hardware_ok"] = box.runtime_sensor_error is None
+        d["sensors_ok"] = sensors_ok
+        if box.runtime_sensor_error:
+            d["hardware_error"] = box.runtime_sensor_error
         g = box.gpio
         if g.led_error:
             d["led_error"] = g.led_error

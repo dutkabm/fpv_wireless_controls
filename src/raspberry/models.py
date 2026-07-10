@@ -55,14 +55,24 @@ class SystemStatus:
         self.battery_error = getattr(box, "battery_error", None)
         if box.env is not None:
             self.sensor_kind = box.env.kind
-            t, rh, p = box.read_environment()
-            self.temperature_c = t
-            self.humidity_percent = rh
-            self.pressure_hpa = p
+            try:
+                t, rh, p = box.read_environment()
+                self.temperature_c = t
+                self.humidity_percent = rh
+                self.pressure_hpa = p
+            except (OSError, RuntimeError) as e:
+                if isinstance(e, OSError):
+                    box.mark_sensor_failure("environment", e)
+                self.env_error = getattr(box, "env_error", None) or str(e)
+                self.sensor_kind = ""
         else:
             self.sensor_kind = ""
         if box.batteries is not None:
-            self.box_battery_v, self.drone_battery_v = box.batteries.read_both_v()
+            try:
+                self.box_battery_v, self.drone_battery_v = box.batteries.read_both_v()
+            except OSError as e:
+                box.mark_sensor_failure("ADC", e)
+                self.battery_error = getattr(box, "battery_error", None) or str(e)
         self.led_on = box.gpio.led_is_on
         self.servo_active = box.gpio.servo_is_active
         self.servo_position = box.gpio.servo_position
