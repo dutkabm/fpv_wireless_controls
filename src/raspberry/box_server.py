@@ -42,6 +42,11 @@ _SRC_ROOT = Path(__file__).resolve().parents[1]
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
+if __package__:
+    from . import gpio_env  # noqa: F401 — before gpiozero
+else:
+    import gpio_env  # noqa: F401
+
 from common.box_api import (
     API_CAMERA,
     API_DRONE_POWER,
@@ -87,6 +92,13 @@ class BoxServerState:
             except Exception:
                 _LOG.exception("BoxController.close failed")
             self.box = None
+
+    def init_at_startup(self) -> None:
+        """Create BoxController at process start (sensor log, fail-fast before first client)."""
+        with self.lock:
+            _box, err = self.get_box_locked()
+        if err is not None:
+            _LOG.warning("Box hardware init failed at startup: %s", err)
 
 
 STATE = BoxServerState()
@@ -310,6 +322,7 @@ def main() -> None:
         signal.signal(signal.SIGINT, _shutdown)
         signal.signal(signal.SIGTERM, _shutdown)
     _LOG.info("Box HTTP API on http://%s:%s/ (GET %s)", bind, port, API_STATUS)
+    STATE.init_at_startup()
     try:
         server.serve_forever()
     finally:

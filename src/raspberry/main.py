@@ -32,6 +32,8 @@ _SRC_ROOT = Path(__file__).resolve().parents[1]
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
+from raspberry import gpio_env  # noqa: F401 — before gpiozero (box_server thread)
+
 from common.crsf import pwm_channels_to_crsf_packet
 from common.network import (
     CHANNEL_PACKET_MAGIC,

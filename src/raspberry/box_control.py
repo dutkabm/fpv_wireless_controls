@@ -19,6 +19,11 @@ import os
 import time
 from typing import Literal, Optional, Tuple, Union
 
+if __package__:
+    from . import gpio_env  # noqa: F401 — before gpiozero
+else:
+    import gpio_env  # noqa: F401
+
 _LOG = logging.getLogger(__name__)
 
 if __package__:

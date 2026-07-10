@@ -9,3 +9,4 @@ adafruit-circuitpython-bme280>=2.6.0
 adafruit-circuitpython-bmp280>=3.2.0
 adafruit-circuitpython-ads1x15>=2.2.0
 gpiozero>=2.0
+lgpio>=0.2.2.0
