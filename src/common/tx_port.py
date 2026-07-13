@@ -190,28 +190,15 @@ def resolve_crsf_serial_port(
     Resolve the serial device for CRSF output.
 
     ``mode=tx`` — USB-UART TX module autodetection (existing behavior).
-    ``mode=uart`` — Pi UART0 (default ``/dev/ttyAMA0``) for a direct FC CRSF link.
+    ``mode=uart`` — Pi primary UART (default ``/dev/serial0``, with fallbacks).
     """
     mode_l = (mode or "tx").strip().lower()
     if mode_l in ("uart", "direct", "fc", "drone", "ttyama"):
-        chosen = (uart_port or "/dev/ttyAMA0").strip() or "/dev/ttyAMA0"
-        aliases = {
-            "uart0": "/dev/ttyAMA0",
-            "ttyama0": "/dev/ttyAMA0",
-            "ama0": "/dev/ttyAMA0",
-            "serial0": "/dev/serial0",
-        }
-        chosen = aliases.get(chosen.lower(), chosen)
-        if chosen.lower().startswith("tty") and "/" not in chosen:
-            chosen = f"/dev/{chosen}"
-        # Prefer an enumerated match; still return the path so open can retry when
-        # the node appears after enabling UART / plugging the FC.
-        raw = _enumerate_devices_raw()
-        if chosen in raw:
-            return chosen
-        # Some Pi images expose UART0 as ttyAMA0 without listing it
-        # via comports until opened; allow the configured path through.
-        if chosen.startswith("/dev/"):
-            return chosen
-        return None
+        # Import locally to keep tx_port usable without the raspberry package.
+        try:
+            from raspberry.crsf_output import pick_uart_device
+        except ImportError:
+            from crsf_output import pick_uart_device  # type: ignore
+
+        return pick_uart_device(uart_port)
     return autodetect_serial_port(baud_rate, tx_serial_pref)

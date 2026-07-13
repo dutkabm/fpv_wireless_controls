@@ -173,7 +173,7 @@ def main() -> None:
     ap.add_argument(
         "--uart",
         default=None,
-        help=f"Direct FC UART device when --output uart (default Raspberry Pi UART0: {DEFAULT_UART_PORT})",
+        help=f"Direct FC UART device when --output uart (default Pi primary UART: {DEFAULT_UART_PORT})",
     )
     ap.add_argument(
         "--config",
@@ -298,7 +298,11 @@ def main() -> None:
             if not waiting_announced:
                 if output_mode == CRSF_OUTPUT_UART:
                     log.info(
-                        "Direct UART mode: waiting for %r. UDP/TCP listeners are up; will keep retrying.",
+                        "Direct UART mode: no Pi UART device yet "
+                        "(tried serial0/ttyAMA0/ttyS0/ttyAMA10; preference %r). "
+                        "Enable serial hardware (raspi-config → Interface → Serial: login shell No, "
+                        "serial port Yes; on Pi 5 also dtparam=uart0 in /boot/firmware/config.txt). "
+                        "UDP/TCP listeners are up; will keep retrying.",
                         uart_port,
                     )
                 else:
@@ -312,7 +316,12 @@ def main() -> None:
         try:
             new_ser = serial.Serial(resolved, baud_rate, timeout=0)
         except (serial.SerialException, OSError) as e:
-            log.warning("Could not open serial %s: %s; will retry.", resolved, e)
+            hint = ""
+            if output_mode == CRSF_OUTPUT_UART and getattr(e, "errno", None) == 2:
+                hint = (
+                    " Enable UART (raspi-config serial hardware) or set uart_port to an existing device."
+                )
+            log.warning("Could not open serial %s: %s;%s will retry.", resolved, e, hint)
             return
         ser = new_ser
         current_serial_path = resolved
