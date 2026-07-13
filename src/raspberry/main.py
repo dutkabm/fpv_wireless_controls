@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Raspberry Pi TX bridge: receive joystick channel frames over UDP, forward CRSF to the TX module.
+Raspberry Pi TX bridge: receive joystick channel frames over UDP, forward CRSF
+to either a USB TX module or a direct FC UART (``crsf_output`` mode).
 
 From the repo root::
 
@@ -24,7 +25,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import serial
 
@@ -33,6 +34,13 @@ if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
 from raspberry import gpio_env  # noqa: F401 — before gpiozero (box_server thread)
+from raspberry.crsf_output import (
+    CRSF_OUTPUT_TX,
+    CRSF_OUTPUT_UART,
+    DEFAULT_UART_PORT,
+    normalize_crsf_output_mode,
+    resolve_uart_port,
+)
 
 from common.crsf import pwm_channels_to_crsf_packet
 from common.network import (
@@ -43,7 +51,7 @@ from common.network import (
     format_handshake_ok,
     unpack_channel_datagram,
 )
-from common.tx_port import autodetect_serial_port, is_autoselect_serial_port
+from common.tx_port import is_autoselect_serial_port, resolve_crsf_serial_port
 
 log = logging.getLogger(__name__)
 
@@ -65,15 +73,18 @@ def _strip_inline_comment(value: Optional[str]) -> str:
     return s
 
 
-def load_serial_from_config(config_path: str) -> tuple[str, int]:
+def load_serial_from_config(config_path: str) -> Tuple[str, int, str, str]:
+    """Return (tx_serial_pref, baud, crsf_output mode, uart_port)."""
     default_port = "AUTO"
     default_baud = 400000
+    default_mode = CRSF_OUTPUT_UART
+    default_uart = DEFAULT_UART_PORT
     if not os.path.exists(config_path):
-        return default_port, default_baud
+        return default_port, default_baud, default_mode, default_uart
     cfg = configparser.ConfigParser()
     cfg.read(config_path)
     if "General" not in cfg:
-        return default_port, default_baud
+        return default_port, default_baud, default_mode, default_uart
     g = cfg["General"]
     port = _strip_inline_comment(g.get("serial_port", fallback=default_port)).strip()
     baud_raw = _strip_inline_comment(g.get("baud_rate", fallback=str(default_baud)))
@@ -81,7 +92,15 @@ def load_serial_from_config(config_path: str) -> tuple[str, int]:
         baud = int(baud_raw)
     except ValueError:
         baud = default_baud
-    return port, baud
+    mode = normalize_crsf_output_mode(
+        _strip_inline_comment(g.get("crsf_output", fallback=default_mode)),
+        default=default_mode,
+    )
+    uart = resolve_uart_port(
+        _strip_inline_comment(g.get("uart_port", fallback=default_uart)),
+        default=default_uart,
+    )
+    return port, baud, mode, uart
 
 
 def _tcp_port_available(bind: str, port: int) -> bool:
@@ -123,7 +142,9 @@ def _start_box_http_server(token: str) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="UDP → CRSF serial bridge for Pi + TX module")
+    ap = argparse.ArgumentParser(
+        description="UDP → CRSF serial bridge (TX module USB or direct FC UART)"
+    )
     ap.add_argument("--bind", default="0.0.0.0", help="UDP / TCP bind address")
     ap.add_argument(
         "--port",
@@ -140,15 +161,26 @@ def main() -> None:
     ap.add_argument(
         "--serial",
         default=None,
-        help="Serial device (default: AUTO or from controller_map.txt General.serial_port)",
+        help="TX-module serial device (default: AUTO or from controller_map.txt General.serial_port)",
     )
     ap.add_argument("--baud", type=int, default=None, help="Baud rate (default from controller_map.txt or 400000)")
+    ap.add_argument(
+        "--output",
+        choices=(CRSF_OUTPUT_TX, CRSF_OUTPUT_UART),
+        default=None,
+        help="CRSF output: tx=USB TX module, uart=Pi UART to FC (default from config or uart)",
+    )
+    ap.add_argument(
+        "--uart",
+        default=None,
+        help=f"Direct FC UART device when --output uart (default Raspberry Pi UART0: {DEFAULT_UART_PORT})",
+    )
     ap.add_argument(
         "--config",
         default=_DEFAULT_BRIDGE_CONFIG,
         help="INI file path for baud/serial hints (controller_map.txt)",
     )
-    ap.add_argument("--hz", type=float, default=50.0, help="CRSF transmit rate toward TX")
+    ap.add_argument("--hz", type=float, default=50.0, help="CRSF transmit rate")
     ap.add_argument("--failsafe-ms", type=float, default=500.0, help="Hold last channels; fail-safe defaults after this latency")
     ap.add_argument(
         "--name",
@@ -168,9 +200,14 @@ def main() -> None:
     box_http_token = secrets.token_urlsafe(24)
     _start_box_http_server(box_http_token)
 
-    cfg_serial, cfg_baud = load_serial_from_config(args.config)
+    cfg_serial, cfg_baud, cfg_mode, cfg_uart = load_serial_from_config(args.config)
     serial_port_pref = args.serial if args.serial is not None else cfg_serial
     baud_rate = args.baud if args.baud is not None else cfg_baud
+    output_mode = args.output if args.output is not None else cfg_mode
+    uart_port = resolve_uart_port(
+        args.uart if args.uart is not None else cfg_uart,
+        default=DEFAULT_UART_PORT,
+    )
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -223,7 +260,8 @@ def main() -> None:
 
     print(
         f"UDP {args.bind}:{args.port} · TCP handshake {args.bind}:{args.handshake_port} "
-        f"as {bridge_name!r} ({args.hz:.0f} Hz CRSF). Serial preference: {serial_port_pref!r}"
+        f"as {bridge_name!r} ({args.hz:.0f} Hz CRSF). "
+        f"Output: {output_mode} (tx pref {serial_port_pref!r}, uart {uart_port!r})"
     )
     if args.debug:
         log.info("UDP joystick: DEBUG log line per valid packet (--debug)")
@@ -237,16 +275,38 @@ def main() -> None:
     last_serial_attempt_s = 0.0
     waiting_announced = False
 
+    def close_serial() -> None:
+        nonlocal ser, current_serial_path, waiting_announced
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:
+                pass
+        ser = None
+        current_serial_path = None
+        waiting_announced = False
+
     def try_open_serial() -> None:
         nonlocal ser, current_serial_path, waiting_announced
-        resolved = autodetect_serial_port(baud_rate, serial_port_pref)
+        resolved = resolve_crsf_serial_port(
+            baud_rate,
+            mode=output_mode,
+            tx_serial_pref=serial_port_pref,
+            uart_port=uart_port,
+        )
         if resolved is None:
             if not waiting_announced:
-                log.info(
-                    "No TX USB-UART detected yet (Linux: ttyACM*/ttyUSB*; macOS: cu.usbserial* / cu.usbmodem*; "
-                    "preference %r). UDP/TCP listeners are up; will keep scanning.",
-                    serial_port_pref,
-                )
+                if output_mode == CRSF_OUTPUT_UART:
+                    log.info(
+                        "Direct UART mode: waiting for %r. UDP/TCP listeners are up; will keep retrying.",
+                        uart_port,
+                    )
+                else:
+                    log.info(
+                        "No TX USB-UART detected yet (Linux: ttyACM*/ttyUSB*; macOS: cu.usbserial* / cu.usbmodem*; "
+                        "preference %r). UDP/TCP listeners are up; will keep scanning.",
+                        serial_port_pref,
+                    )
                 waiting_announced = True
             return
         try:
@@ -257,8 +317,10 @@ def main() -> None:
         ser = new_ser
         current_serial_path = resolved
         waiting_announced = False
-        if is_autoselect_serial_port(serial_port_pref):
-            log.info("Serial open: %s @ %d (auto-detected).", resolved, baud_rate)
+        if output_mode == CRSF_OUTPUT_UART:
+            log.info("Serial open: %s @ %d (direct FC UART).", resolved, baud_rate)
+        elif is_autoselect_serial_port(serial_port_pref):
+            log.info("Serial open: %s @ %d (TX module auto-detected).", resolved, baud_rate)
         elif str(serial_port_pref).strip() != str(resolved).strip():
             log.info(
                 "Serial open: %s @ %d (configured %r unavailable; using detected).",
@@ -267,7 +329,7 @@ def main() -> None:
                 serial_port_pref,
             )
         else:
-            log.info("Serial open: %s @ %d.", resolved, baud_rate)
+            log.info("Serial open: %s @ %d (TX module).", resolved, baud_rate)
 
     try_open_serial()
     last_serial_attempt_s = time.monotonic()
@@ -348,12 +410,7 @@ def main() -> None:
                     current_serial_path,
                     e,
                 )
-                try:
-                    ser.close()
-                except Exception:
-                    pass
-                ser = None
-                current_serial_path = None
+                close_serial()
                 last_serial_attempt_s = time.monotonic()
                 continue
             time.sleep(period)
@@ -364,11 +421,7 @@ def main() -> None:
             handshake_srv.close()
         except OSError:
             pass
-        if ser is not None:
-            try:
-                ser.close()
-            except Exception:
-                pass
+        close_serial()
         sock.close()
 
 
