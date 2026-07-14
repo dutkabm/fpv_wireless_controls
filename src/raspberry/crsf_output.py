@@ -16,8 +16,10 @@ CRSF_OUTPUT_UART = "uart"
 CRSF_OUTPUT_MODES = (CRSF_OUTPUT_TX, CRSF_OUTPUT_UART)
 
 # Fixed CRSF serial baud by output mode (not configurable via controller_map.txt).
-CRSF_BAUD_UART = 115200  # Pi-as-RX ↔ flight controller
+CRSF_BAUD_UART = 115200  # Preferred Pi-as-RX ↔ FC (if your FC is set to this)
+CRSF_BAUD_UART_ALT = 420000  # Betaflight/ELRS CRSF default; auto-tried if 115200 yields garbage
 CRSF_BAUD_TX = 400000  # USB ELRS / Crossfire TX module
+UART_BAUD_FALLBACK_S = 8.0  # Switch uart baud after this long with RX but no frames
 
 # Raspberry Pi primary UART (GPIO 14/15). Prefer the stable symlink; it points at
 # ttyAMA0 / ttyS0 / ttyAMA10 depending on model and config.
