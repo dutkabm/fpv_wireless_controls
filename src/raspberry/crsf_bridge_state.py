@@ -42,6 +42,7 @@ _telemetry: Dict[str, Any] = {}
 _telemetry_mono: float = 0.0
 _link_mono: float = 0.0
 _fc_mono: float = 0.0
+_bus_mono: float = 0.0
 
 
 def set_output_mode(mode: str) -> None:
@@ -57,6 +58,13 @@ def set_serial(*, open_: bool, path: Optional[str] = None) -> None:
         _serial_path = path if open_ and path else None
         if not open_:
             _serial_path = None
+
+
+def note_bus_rx() -> None:
+    """Mark that a valid CRSF frame was received (ping/info/channels/telem)."""
+    global _bus_mono
+    with _lock:
+        _bus_mono = time.monotonic()
 
 
 def update_telemetry(fields: Dict[str, Any]) -> None:
@@ -80,6 +88,7 @@ def snapshot() -> Dict[str, Any]:
         age = (now - _telemetry_mono) if _telemetry_mono > 0 else None
         link_age = (now - _link_mono) if _link_mono > 0 else None
         fc_age = (now - _fc_mono) if _fc_mono > 0 else None
+        bus_age = (now - _bus_mono) if _bus_mono > 0 else None
         serial_open = _serial_open
         serial_path = _serial_path
         mode = _output_mode
@@ -90,7 +99,6 @@ def snapshot() -> Dict[str, Any]:
     except (TypeError, ValueError):
         lq_n = 0
 
-    # RF link stats (USB TX module / real RX). Not expected when Pi-as-RX→FC.
     rf_link_ok = (
         serial_open
         and lq_n > 0
@@ -106,8 +114,10 @@ def snapshot() -> Dict[str, Any]:
         and fc_age <= _TELEM_STALE_S
     )
 
-    # UI "connected": RF link if present, else FC sensor/attitude telemetry.
-    connected = rf_link_ok or fc_ok
+    bus_ok = serial_open and bus_age is not None and bus_age <= _TELEM_STALE_S
+
+    # UI connected: RF link, FC sensors, or any recent CRSF bus traffic (e.g. DEVICE_PING).
+    connected = rf_link_ok or fc_ok or bus_ok
 
     return {
         "crsf_serial_open": serial_open,
@@ -116,6 +126,7 @@ def snapshot() -> Dict[str, Any]:
         "crsf_link_ok": connected,
         "crsf_rf_link_ok": rf_link_ok,
         "crsf_fc_ok": fc_ok,
+        "crsf_bus_ok": bus_ok,
         "crsf_telemetry": telem,
         "crsf_telemetry_age_s": None if age is None else round(age, 3),
     }

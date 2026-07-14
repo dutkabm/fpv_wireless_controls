@@ -35,12 +35,9 @@ if str(_SRC_ROOT) not in sys.path:
 
 from raspberry import gpio_env  # noqa: F401 — before gpiozero (box_server thread)
 from raspberry.crsf_output import (
-    CRSF_BAUD_UART,
-    CRSF_BAUD_UART_ALT,
     CRSF_OUTPUT_TX,
     CRSF_OUTPUT_UART,
     DEFAULT_UART_PORT,
-    UART_BAUD_FALLBACK_S,
     baud_for_crsf_output,
     normalize_crsf_output_mode,
     resolve_uart_port,
@@ -202,8 +199,6 @@ def main() -> None:
     serial_port_pref = args.serial if args.serial is not None else cfg_serial
     output_mode = args.output if args.output is not None else cfg_mode
     baud_rate = baud_for_crsf_output(output_mode)
-    uart_baud_alt_tried = False
-    serial_open_mono = 0.0
     uart_port = resolve_uart_port(
         args.uart if args.uart is not None else cfg_uart,
         default=DEFAULT_UART_PORT,
@@ -297,7 +292,7 @@ def main() -> None:
         _publish_telemetry()
 
     def try_open_serial() -> None:
-        nonlocal ser, current_serial_path, waiting_announced, serial_open_mono
+        nonlocal ser, current_serial_path, waiting_announced
         resolved = resolve_crsf_serial_port(
             baud_rate,
             mode=output_mode,
@@ -351,7 +346,6 @@ def main() -> None:
         ser = new_ser
         current_serial_path = resolved
         waiting_announced = False
-        serial_open_mono = time.monotonic()
         crsf_reader.telemetry.clear()
         crsf_reader.reset_stats()
         crsf_bridge_state.set_serial(open_=True, path=resolved)
@@ -365,11 +359,7 @@ def main() -> None:
             )
             log.info(
                 "Wire Pi TX→FC RX and Pi RX←FC TX (full duplex). "
-                "Expect battery/GPS/attitude from FC — not RF LQ (no radio link). "
-                "If RX is garbage at %d, will try %d after %.0fs.",
-                CRSF_BAUD_UART,
-                CRSF_BAUD_UART_ALT,
-                UART_BAUD_FALLBACK_S,
+                "Expect battery/GPS/attitude from FC — not RF LQ (no radio link)."
             )
         elif is_autoselect_serial_port(serial_port_pref):
             log.info("Serial open: %s @ %d (TX module auto-detected).", resolved, baud_rate)
@@ -455,8 +445,7 @@ def main() -> None:
     _RX_CHUNK = 512
 
     def _log_telem_pulse(*, force: bool = False) -> None:
-        nonlocal last_telem_log_s, last_link_ok, baud_rate, uart_baud_alt_tried
-        nonlocal bytes_rx_total, first_rx_logged
+        nonlocal last_telem_log_s, last_link_ok
         now_s = time.monotonic()
         snap = crsf_bridge_state.snapshot()
         link_ok = bool(snap.get("crsf_link_ok"))
@@ -474,32 +463,6 @@ def main() -> None:
                 telem.get("Uplink LQ", "—"),
                 sorted(telem.keys()) if telem else [],
             )
-        if (
-            output_mode == CRSF_OUTPUT_UART
-            and not uart_baud_alt_tried
-            and ser is not None
-            and baud_rate == CRSF_BAUD_UART
-            and serial_open_mono > 0
-            and now_s - serial_open_mono >= UART_BAUD_FALLBACK_S
-            and bytes_rx_total >= 50
-            and crsf_reader.frames_ok == 0
-            and not crsf_reader.addr_hits
-        ):
-            uart_baud_alt_tried = True
-            log.warning(
-                "CRSF uart: RX noise at %d baud (no 0xC8/0xEA frames, recent=%s). "
-                "Reopening at %d (common Betaflight/ELRS CRSF baud).",
-                baud_rate,
-                crsf_reader.recent_raw_hex() or "—",
-                CRSF_BAUD_UART_ALT,
-            )
-            close_serial()
-            baud_rate = CRSF_BAUD_UART_ALT
-            bytes_rx_total = 0
-            first_rx_logged = False
-            last_link_ok = None
-            try_open_serial()
-            return
         if not force and now_s - last_telem_log_s < 5.0:
             return
         last_telem_log_s = now_s
@@ -585,14 +548,23 @@ def main() -> None:
                             chunk[:32].hex(" "),
                         )
                     n_frames = crsf_reader.feed(chunk)
-                    if n_frames and log.isEnabledFor(logging.DEBUG):
-                        log.debug(
-                            "CRSF RX %d bytes → %d frame(s) last=%s telem_keys=%s",
-                            len(chunk),
-                            n_frames,
-                            crsf_reader.last_type_name,
-                            sorted(crsf_reader.telemetry.keys()),
-                        )
+                    if n_frames:
+                        crsf_bridge_state.note_bus_rx()
+                        if log.isEnabledFor(logging.DEBUG):
+                            log.debug(
+                                "CRSF RX %d bytes → %d frame(s) last=%s telem_keys=%s",
+                                len(chunk),
+                                n_frames,
+                                crsf_reader.last_type_name,
+                                sorted(crsf_reader.telemetry.keys()),
+                            )
+                replies = crsf_reader.take_replies()
+                for reply in replies:
+                    ser.write(reply)
+                    log.info(
+                        "CRSF TX reply %d bytes (DEVICE_INFO to FC after DEVICE_PING)",
+                        len(reply),
+                    )
                 if drained:
                     _publish_telemetry()
                 _log_telem_pulse()

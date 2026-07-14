@@ -160,7 +160,7 @@ Dependencies: `customtkinter`, `pygame` (see `src/ground_station/requirements.tx
 
 Receives UDP channel packets from the client and forwards CRSF to the transmitter over USB serial. Starts `raspberry.box_server` in a background thread and passes the same bearer token in the TCP handshake (`OK <name> <token>`).
 
-Serial / CRSF output mode defaults come from `src/ground_station/controller_map.txt` on the Pi if present (`--config`); that file is read as data only, not imported as Python. Baud is fixed in code: **115200** for `uart` (Pi→FC), **400000** for `tx` (USB TX module).
+Serial / CRSF output mode defaults come from `src/ground_station/controller_map.txt` on the Pi if present (`--config`); that file is read as data only, not imported as Python. Baud is fixed in code: **420000** for `uart` (Pi→FC CRSF), **400000** for `tx` (USB TX module).
 
 Raspberry Pi OS (Bookworm+) blocks system-wide `pip install` (PEP 668). Use a venv:
 

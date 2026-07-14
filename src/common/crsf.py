@@ -6,17 +6,22 @@ from enum import IntEnum
 from typing import Dict, List, MutableMapping, Optional, Union
 
 CRSF_SYNC_BYTE = 0xC8  # Flight controller / common sync used for RC TX
+CRSF_ADDRESS_FLIGHT_CONTROLLER = 0xC8
+CRSF_ADDRESS_RADIO_TRANSMITTER = 0xEA
+CRSF_ADDRESS_CRSF_RECEIVER = 0xEC
+CRSF_ADDRESS_CRSF_TRANSMITTER = 0xEE
+CRSF_ADDRESS_BROADCAST = 0x00
 CRSF_MAX_PACKET_SIZE = 64
 
 # Destination/source addresses that can lead a valid CRSF frame on the wire.
 # FC telemetry to a radio/RX often starts with 0xEA (not 0xC8).
 CRSF_FRAME_ADDRESSES = frozenset(
     {
-        0x00,  # broadcast
-        0xC8,  # flight controller
-        0xEA,  # radio transmitter (FC → handset/RX telemetry)
-        0xEC,  # CRSF receiver
-        0xEE,  # CRSF transmitter
+        CRSF_ADDRESS_BROADCAST,
+        CRSF_ADDRESS_FLIGHT_CONTROLLER,
+        CRSF_ADDRESS_RADIO_TRANSMITTER,
+        CRSF_ADDRESS_CRSF_RECEIVER,
+        CRSF_ADDRESS_CRSF_TRANSMITTER,
     }
 )
 
@@ -59,6 +64,51 @@ def crsf_validate_frame(frame: Union[bytes, bytearray]) -> bool:
     if length != len(frame) - 2:
         return False
     return crc8_dvb_s2(frame[2:-1]) == frame[-1]
+
+
+def build_crsf_packet(dest_addr: int, type_byte: int, payload: bytes = b"") -> bytes:
+    """Build ``[dest][len][type][payload…][crc]``."""
+    body = bytes([int(type_byte) & 0xFF]) + bytes(payload)
+    length = len(body) + 1
+    packet = bytearray([int(dest_addr) & 0xFF, length]) + body
+    packet.append(crc8_dvb_s2(packet[2:]))
+    return bytes(packet)
+
+
+def build_device_info_packet(
+    *,
+    dest: int = CRSF_ADDRESS_FLIGHT_CONTROLLER,
+    origin: int = CRSF_ADDRESS_CRSF_RECEIVER,
+    name: str = "PiBridgeRX",
+) -> bytes:
+    """Reply used when the FC DEVICE_PINGs the receiver address (0xEC)."""
+    name_b = name.encode("ascii", errors="replace")[:14] + b"\x00"
+    payload = bytearray()
+    payload.append(int(dest) & 0xFF)
+    payload.append(int(origin) & 0xFF)
+    payload.extend(name_b)
+    payload.extend((0x50494252).to_bytes(4, "big"))  # serial 'PIBR'
+    payload.extend((0x00000001).to_bytes(4, "big"))  # hardware id
+    payload.extend((0x00010000).to_bytes(4, "big"))  # firmware id
+    payload.append(0)  # parameter count
+    payload.append(1)  # parameter version
+    return build_crsf_packet(dest, CRSFPacketType.DEVICE_INFO, bytes(payload))
+
+
+def device_info_reply_for_ping(packet: Union[bytes, bytearray]) -> Optional[bytes]:
+    """If ``packet`` is a DEVICE_PING for us (RX/radio/broadcast), return DEVICE_INFO."""
+    if len(packet) < 4 or packet[2] != CRSFPacketType.DEVICE_PING:
+        return None
+    payload = packet[3:-1]
+    queried = int(payload[0]) if payload else CRSF_ADDRESS_BROADCAST
+    if queried not in (
+        CRSF_ADDRESS_BROADCAST,
+        CRSF_ADDRESS_CRSF_RECEIVER,
+        CRSF_ADDRESS_RADIO_TRANSMITTER,
+    ):
+        return None
+    origin = CRSF_ADDRESS_CRSF_RECEIVER if queried == CRSF_ADDRESS_BROADCAST else queried
+    return build_device_info_packet(dest=CRSF_ADDRESS_FLIGHT_CONTROLLER, origin=origin)
 
 
 def pack_crsf_to_bytes(channels: List[int]) -> bytes:
@@ -188,6 +238,7 @@ class CrsfSerialReader:
         self.last_type_name = ""
         self.last_types: Dict[str, int] = {}
         self.addr_hits: Dict[str, int] = {}
+        self.pending_replies: List[bytes] = []
         self._recent_raw = bytearray()
         self._recent_raw_max = 64
 
@@ -204,7 +255,13 @@ class CrsfSerialReader:
         self.last_type_name = ""
         self.last_types.clear()
         self.addr_hits.clear()
+        self.pending_replies.clear()
         self._recent_raw.clear()
+
+    def take_replies(self) -> List[bytes]:
+        out = list(self.pending_replies)
+        self.pending_replies.clear()
+        return out
 
     def recent_raw_hex(self) -> str:
         return bytes(self._recent_raw).hex(" ") if self._recent_raw else ""
@@ -243,6 +300,10 @@ class CrsfSerialReader:
                 self.last_types[tname] = self.last_types.get(tname, 0) + 1
                 if parse_crsf_telemetry(packet, self.telemetry):
                     self.frames_telem += 1
+                reply = device_info_reply_for_ping(packet)
+                if reply is not None:
+                    self.pending_replies.append(reply)
+                    self.telemetry["CRSF Device"] = "ping → DEVICE_INFO"
                 del self._buffer[: length + 2]
             else:
                 self.frames_bad_crc += 1
