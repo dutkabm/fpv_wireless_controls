@@ -337,8 +337,10 @@ def main() -> None:
         current_serial_path = resolved
         waiting_announced = False
         crsf_reader.telemetry.clear()
+        crsf_reader.reset_stats()
         crsf_bridge_state.set_serial(open_=True, path=resolved)
         _publish_telemetry()
+        log.info("CRSF telemetry RX enabled on %s (use --debug for per-frame logs)", resolved)
         if output_mode == CRSF_OUTPUT_UART:
             log.info("Serial open: %s @ %d (direct FC UART).", resolved, baud_rate)
         elif is_autoselect_serial_port(serial_port_pref):
@@ -408,6 +410,54 @@ def main() -> None:
     t.start()
 
     failsafe_pwm = [1500] * 16
+    last_telem_log_s = 0.0
+    last_link_ok: Optional[bool] = None
+    bytes_rx_total = 0
+    first_rx_logged = False
+    # Drain RX even when in_waiting is unreliable (some USB-UART adapters).
+    _RX_CHUNK = 512
+
+    def _log_telem_pulse(*, force: bool = False) -> None:
+        nonlocal last_telem_log_s, last_link_ok
+        now_s = time.monotonic()
+        snap = crsf_bridge_state.snapshot()
+        link_ok = bool(snap.get("crsf_link_ok"))
+        if last_link_ok is None or link_ok != last_link_ok:
+            last_link_ok = link_ok
+            telem = snap.get("crsf_telemetry") or {}
+            log.info(
+                "CRSF link %s (serial=%s path=%s mode=%s LQ=%s keys=%s)",
+                "OK" if link_ok else "down",
+                snap.get("crsf_serial_open"),
+                snap.get("crsf_serial_path") or "—",
+                snap.get("crsf_output") or "—",
+                telem.get("Uplink LQ", "—"),
+                sorted(telem.keys()) if telem else [],
+            )
+        if not force and now_s - last_telem_log_s < 5.0:
+            return
+        last_telem_log_s = now_s
+        telem = snap.get("crsf_telemetry") or {}
+        log.info(
+            "CRSF RX summary: bytes=%d frames_ok=%d telem=%d bad_crc=%d sync_skip=%d "
+            "buf=%d types=%s age=%s LQ=%s link_ok=%s",
+            crsf_reader.bytes_fed,
+            crsf_reader.frames_ok,
+            crsf_reader.frames_telem,
+            crsf_reader.frames_bad_crc,
+            crsf_reader.sync_skips,
+            crsf_reader.buffer_len,
+            dict(crsf_reader.last_types),
+            snap.get("crsf_telemetry_age_s"),
+            telem.get("Uplink LQ", "—"),
+            link_ok,
+        )
+        if bytes_rx_total == 0:
+            log.info(
+                "CRSF: no UART bytes received yet — TX/FC may not be sending telemetry "
+                "on this UART (check ELRS telemetry / FC CRSF TX pin)."
+            )
+
     try:
         while True:
             if ser is None:
@@ -426,18 +476,50 @@ def main() -> None:
                 ch = failsafe_pwm
             try:
                 ser.write(pwm_channels_to_crsf_packet(ch))
-                waiting = getattr(ser, "in_waiting", 0) or 0
-                if waiting > 0:
-                    crsf_reader.feed(ser.read(min(waiting, 512)))
+                # Drain RX: some USB-UART adapters report in_waiting=0 incorrectly,
+                # so always try one non-blocking read, then empty the queue.
+                drained = False
+                while True:
+                    waiting = int(getattr(ser, "in_waiting", 0) or 0)
+                    to_read = waiting if waiting > 0 else (0 if drained else 1)
+                    if to_read <= 0:
+                        break
+                    chunk = ser.read(min(to_read, _RX_CHUNK))
+                    if not chunk:
+                        break
+                    drained = True
+                    bytes_rx_total += len(chunk)
+                    if not first_rx_logged:
+                        first_rx_logged = True
+                        log.info(
+                            "CRSF UART RX first bytes (%d): %s",
+                            len(chunk),
+                            chunk[:32].hex(" "),
+                        )
+                    n_frames = crsf_reader.feed(chunk)
+                    if n_frames and log.isEnabledFor(logging.DEBUG):
+                        log.debug(
+                            "CRSF RX %d bytes → %d frame(s) last=%s telem_keys=%s",
+                            len(chunk),
+                            n_frames,
+                            crsf_reader.last_type_name,
+                            sorted(crsf_reader.telemetry.keys()),
+                        )
+                if drained:
                     _publish_telemetry()
+                _log_telem_pulse()
             except (serial.SerialException, OSError) as e:
                 log.warning(
-                    "Serial write failed on %s (%s); closing and re-scanning.",
+                    "Serial I/O failed on %s (%s); closing and re-scanning.",
                     current_serial_path,
                     e,
                 )
                 close_serial()
                 last_serial_attempt_s = time.monotonic()
+                bytes_rx_total = 0
+                first_rx_logged = False
+                crsf_reader.reset_stats()
+                last_link_ok = None
                 continue
             time.sleep(period)
     except KeyboardInterrupt:

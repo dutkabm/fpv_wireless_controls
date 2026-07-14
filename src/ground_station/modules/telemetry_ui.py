@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Callable, Optional
 
 import customtkinter as ctk
 
 from modules.box_remote import BOX_HTTP_PORT, BoxRemoteClient
 
+_LOG = logging.getLogger(__name__)
+
 TAB_POLL_MS = 500  # Telemetry tab visible: GET /api/status interval
 BADGE_POLL_MS = 1500  # While Connected: refresh CRSF badge on Joystick tab
+_STATUS_LOG_S = 5.0
 
 
 _LINK_KEYS = (
@@ -82,6 +87,8 @@ class TelemetryPanel:
         self._poll_after_id: Optional[str] = None
         self._badge_after_id: Optional[str] = None
         self._box_token: Optional[str] = None
+        self._last_status_log_s = 0.0
+        self._last_logged_link: Optional[bool] = None
 
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(0, weight=1)
@@ -157,10 +164,18 @@ class TelemetryPanel:
             self.client = c
         d = self.client.get_status()
         if not d.get("ok"):
+            _LOG.warning("CRSF status poll failed after connect: %s", d.get("error") or d)
             if not quiet:
                 return False
             self.client = None
             return False
+        _LOG.info(
+            "CRSF status after connect: serial=%s path=%s link=%s keys=%s",
+            d.get("crsf_serial_open"),
+            d.get("crsf_serial_path") or "—",
+            d.get("crsf_link_ok"),
+            sorted((d.get("crsf_telemetry") or {}).keys()),
+        )
         self._apply_status(d)
         self._start_badge_poll()
         if self._tab_visible:
@@ -173,9 +188,11 @@ class TelemetryPanel:
         self._cancel_badge_poll()
         self.client = None
         self._box_token = None
+        self._last_logged_link = None
         self._clear_labels()
         if self._on_status is not None:
             self._on_status({"ok": False})
+        _LOG.info("CRSF telemetry poll stopped")
 
     def shutdown(self) -> None:
         self.disconnect()
@@ -218,6 +235,7 @@ class TelemetryPanel:
             return
         d = self.client.get_status()
         if not d.get("ok"):
+            _LOG.warning("CRSF status poll failed (tab): %s", d.get("error") or d)
             self.disconnect()
             return
         self._apply_status(d)
@@ -231,6 +249,7 @@ class TelemetryPanel:
         if not self._tab_visible:
             d = self.client.get_status()
             if not d.get("ok"):
+                _LOG.warning("CRSF status poll failed (badge): %s", d.get("error") or d)
                 self.disconnect()
                 return
             self._apply_status(d)
@@ -242,12 +261,46 @@ class TelemetryPanel:
         for lab in self._field_labels.values():
             lab.configure(text="—")
 
+    def _log_status(self, d: dict) -> None:
+        link = bool(d.get("crsf_link_ok"))
+        telem = d.get("crsf_telemetry") or {}
+        if not isinstance(telem, dict):
+            telem = {}
+        if self._last_logged_link is None or link != self._last_logged_link:
+            self._last_logged_link = link
+            _LOG.info(
+                "CRSF UI link %s · serial=%s path=%s LQ=%s age=%s keys=%s",
+                "OK" if link else "down",
+                d.get("crsf_serial_open"),
+                d.get("crsf_serial_path") or "—",
+                telem.get("Uplink LQ", "—"),
+                d.get("crsf_telemetry_age_s"),
+                sorted(telem.keys()),
+            )
+        now = time.monotonic()
+        if now - self._last_status_log_s < _STATUS_LOG_S:
+            return
+        self._last_status_log_s = now
+        _LOG.info(
+            "CRSF UI poll: serial=%s link=%s age=%s LQ=%s RSSI1=%s types/keys=%s",
+            d.get("crsf_serial_open"),
+            link,
+            d.get("crsf_telemetry_age_s"),
+            telem.get("Uplink LQ", "—"),
+            telem.get("Uplink RSSI 1", "—"),
+            sorted(telem.keys()) if telem else [],
+        )
+        if _LOG.isEnabledFor(logging.DEBUG) and telem:
+            _LOG.debug("CRSF telemetry dump: %s", telem)
+
     def _apply_status(self, d: dict) -> None:
         if self._on_status is not None:
             self._on_status(d)
         if not d.get("ok"):
             self._clear_labels()
             return
+
+        self._log_status(d)
 
         def yes_no(v: Any) -> str:
             return "yes" if v else "no"

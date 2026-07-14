@@ -86,10 +86,20 @@ def pwm_channels_to_crsf_packet(channels_1000_2000: List[int]) -> bytes:
     return channels_crsf_to_packet(crsfs)
 
 
-def parse_crsf_telemetry(packet: Union[bytes, bytearray], into: MutableMapping[str, object]) -> None:
-    """Merge known CRSF telemetry fields from ``packet`` into ``into`` (display strings)."""
+def _packet_type_name(type_byte: int) -> str:
+    try:
+        return CRSFPacketType(type_byte).name
+    except ValueError:
+        return f"0x{type_byte:02X}"
+
+
+def parse_crsf_telemetry(packet: Union[bytes, bytearray], into: MutableMapping[str, object]) -> bool:
+    """Merge known CRSF telemetry fields from ``packet`` into ``into``.
+
+    Returns True if a known telemetry type was applied (not just validated).
+    """
     if len(packet) < 4 or packet[0] != CRSF_SYNC_BYTE:
-        return
+        return False
     type_byte = packet[2]
     payload = packet[3:-1]
     if type_byte == CRSFPacketType.LINK_STATISTICS and len(payload) >= 10:
@@ -103,7 +113,8 @@ def parse_crsf_telemetry(packet: Union[bytes, bytearray], into: MutableMapping[s
         into["Downlink RSSI"] = payload[7]
         into["Downlink LQ"] = payload[8]
         into["Downlink SNR"] = payload[9]
-    elif type_byte == CRSFPacketType.BATTERY_SENSOR and len(payload) >= 8:
+        return True
+    if type_byte == CRSFPacketType.BATTERY_SENSOR and len(payload) >= 8:
         voltage = int.from_bytes(payload[0:2], byteorder="little") / 100.0
         current = int.from_bytes(payload[2:4], byteorder="little") / 100.0
         capacity = int.from_bytes(payload[4:6], byteorder="little")
@@ -112,7 +123,8 @@ def parse_crsf_telemetry(packet: Union[bytes, bytearray], into: MutableMapping[s
         into["Current"] = f"{current:.2f} A"
         into["Capacity"] = f"{capacity} mAh"
         into["Remaining"] = f"{remaining} %"
-    elif type_byte == CRSFPacketType.GPS and len(payload) >= 15:
+        return True
+    if type_byte == CRSFPacketType.GPS and len(payload) >= 15:
         latitude = int.from_bytes(payload[0:4], byteorder="little", signed=True) / 1e7
         longitude = int.from_bytes(payload[4:8], byteorder="little", signed=True) / 1e7
         ground_speed = int.from_bytes(payload[8:10], byteorder="little")
@@ -123,7 +135,8 @@ def parse_crsf_telemetry(packet: Union[bytes, bytearray], into: MutableMapping[s
         into["Speed"] = f"{ground_speed} km/h"
         into["Heading"] = f"{heading:.2f}°"
         into["Altitude"] = f"{altitude:.2f} m"
-    elif type_byte == CRSFPacketType.ATTITUDE and len(payload) >= 6:
+        return True
+    if type_byte == CRSFPacketType.ATTITUDE and len(payload) >= 6:
         # int16 radians × 10000
         pitch = int.from_bytes(payload[0:2], byteorder="little", signed=True) / 10000.0
         roll = int.from_bytes(payload[2:4], byteorder="little", signed=True) / 10000.0
@@ -131,12 +144,16 @@ def parse_crsf_telemetry(packet: Union[bytes, bytearray], into: MutableMapping[s
         into["Pitch"] = f"{pitch:.3f} rad"
         into["Roll"] = f"{roll:.3f} rad"
         into["Yaw"] = f"{yaw:.3f} rad"
-    elif type_byte == CRSFPacketType.FLIGHT_MODE and len(payload) >= 1:
+        return True
+    if type_byte == CRSFPacketType.FLIGHT_MODE and len(payload) >= 1:
         end = payload.find(0)
         raw = payload if end < 0 else payload[:end]
         mode = raw.decode("utf-8", errors="replace").strip()
         if mode:
             into["Flight Mode"] = mode
+            return True
+        return False
+    return False
 
 
 class CrsfSerialReader:
@@ -145,24 +162,58 @@ class CrsfSerialReader:
     def __init__(self, telemetry: Optional[MutableMapping[str, object]] = None) -> None:
         self._buffer = bytearray()
         self.telemetry: Dict[str, object] = telemetry if telemetry is not None else {}
+        self.bytes_fed = 0
+        self.frames_ok = 0
+        self.frames_bad_crc = 0
+        self.frames_telem = 0
+        self.sync_skips = 0
+        self.last_type_name = ""
+        self.last_types: Dict[str, int] = {}
 
-    def feed(self, data: bytes) -> None:
+    @property
+    def buffer_len(self) -> int:
+        return len(self._buffer)
+
+    def reset_stats(self) -> None:
+        self.bytes_fed = 0
+        self.frames_ok = 0
+        self.frames_bad_crc = 0
+        self.frames_telem = 0
+        self.sync_skips = 0
+        self.last_type_name = ""
+        self.last_types.clear()
+
+    def feed(self, data: bytes) -> int:
+        """Feed UART bytes. Returns count of validated CRSF frames in this chunk."""
         if not data:
-            return
+            return 0
+        self.bytes_fed += len(data)
         self._buffer.extend(data)
+        frames = 0
         while len(self._buffer) >= 4:
             if self._buffer[0] != CRSF_SYNC_BYTE:
                 self._buffer.pop(0)
+                self.sync_skips += 1
                 continue
             length = self._buffer[1]
-            if length > CRSF_MAX_PACKET_SIZE:
+            if length > CRSF_MAX_PACKET_SIZE or length < 2:
                 self._buffer.pop(0)
+                self.sync_skips += 1
                 continue
             if len(self._buffer) < length + 2:
                 break
             packet = bytes(self._buffer[: length + 2])
             if crsf_validate_frame(packet):
-                parse_crsf_telemetry(packet, self.telemetry)
+                frames += 1
+                self.frames_ok += 1
+                type_byte = packet[2]
+                tname = _packet_type_name(type_byte)
+                self.last_type_name = tname
+                self.last_types[tname] = self.last_types.get(tname, 0) + 1
+                if parse_crsf_telemetry(packet, self.telemetry):
+                    self.frames_telem += 1
                 del self._buffer[: length + 2]
             else:
+                self.frames_bad_crc += 1
                 self._buffer.pop(0)
+        return frames
