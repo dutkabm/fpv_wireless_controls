@@ -492,6 +492,16 @@ def main() -> None:
                 dict(crsf_reader.addr_hits) or "{}",
                 crsf_reader.recent_raw_hex() or "—",
             )
+        elif (
+            crsf_reader.frames_ok > 0
+            and crsf_reader.frames_telem == 0
+            and set(crsf_reader.last_types) <= {"DEVICE_PING", "DEVICE_INFO"}
+        ):
+            log.info(
+                "CRSF: only DEVICE_PING/INFO so far (no battery/attitude). "
+                "Enable Betaflight TELEMETRY on this CRSF UART; power-cycle FC while "
+                "the bridge is running so it sees our ELRS DEVICE_INFO reply."
+            )
         if bytes_rx_total == 0:
             if output_mode == CRSF_OUTPUT_UART:
                 log.info(
@@ -526,45 +536,58 @@ def main() -> None:
             if ch is None or stale:
                 ch = failsafe_pwm
             try:
-                ser.write(pwm_channels_to_crsf_packet(ch))
-                # Drain RX: some USB-UART adapters report in_waiting=0 incorrectly,
-                # so always try one non-blocking read, then empty the queue.
-                drained = False
-                while True:
-                    waiting = int(getattr(ser, "in_waiting", 0) or 0)
-                    to_read = waiting if waiting > 0 else (0 if drained else 1)
-                    if to_read <= 0:
-                        break
-                    chunk = ser.read(min(to_read, _RX_CHUNK))
-                    if not chunk:
-                        break
-                    drained = True
-                    bytes_rx_total += len(chunk)
-                    if not first_rx_logged:
-                        first_rx_logged = True
-                        log.info(
-                            "CRSF UART RX first bytes (%d): %s",
-                            len(chunk),
-                            chunk[:32].hex(" "),
-                        )
-                    n_frames = crsf_reader.feed(chunk)
-                    if n_frames:
-                        crsf_bridge_state.note_bus_rx()
-                        if log.isEnabledFor(logging.DEBUG):
-                            log.debug(
-                                "CRSF RX %d bytes → %d frame(s) last=%s telem_keys=%s",
+                def _drain_rx() -> bool:
+                    nonlocal bytes_rx_total, first_rx_logged
+                    got = False
+                    drained_once = False
+                    while True:
+                        waiting = int(getattr(ser, "in_waiting", 0) or 0)
+                        to_read = waiting if waiting > 0 else (0 if drained_once else 1)
+                        if to_read <= 0:
+                            break
+                        chunk = ser.read(min(to_read, _RX_CHUNK))
+                        if not chunk:
+                            break
+                        drained_once = True
+                        got = True
+                        bytes_rx_total += len(chunk)
+                        if not first_rx_logged:
+                            first_rx_logged = True
+                            log.info(
+                                "CRSF UART RX first bytes (%d): %s",
                                 len(chunk),
-                                n_frames,
-                                crsf_reader.last_type_name,
-                                sorted(crsf_reader.telemetry.keys()),
+                                chunk[:32].hex(" "),
                             )
+                        n_frames = crsf_reader.feed(chunk)
+                        if n_frames:
+                            crsf_bridge_state.note_bus_rx()
+                            if log.isEnabledFor(logging.DEBUG):
+                                log.debug(
+                                    "CRSF RX %d bytes → %d frame(s) last=%s telem_keys=%s",
+                                    len(chunk),
+                                    n_frames,
+                                    crsf_reader.last_type_name,
+                                    sorted(crsf_reader.telemetry.keys()),
+                                )
+                    return got
+
+                # Listen before TX so FC telemetry between RC frames is not missed.
+                drained = _drain_rx()
+                ser.write(pwm_channels_to_crsf_packet(ch))
+                try:
+                    ser.flush()
+                except Exception:
+                    pass
+                drained = _drain_rx() or drained
                 replies = crsf_reader.take_replies()
                 for reply in replies:
                     ser.write(reply)
                     log.info(
-                        "CRSF TX reply %d bytes (DEVICE_INFO to FC after DEVICE_PING)",
+                        "CRSF TX reply %d bytes DEVICE_INFO %s",
                         len(reply),
+                        reply[:min(12, len(reply))].hex(" "),
                     )
+                    drained = _drain_rx() or drained
                 if drained:
                     _publish_telemetry()
                 _log_telem_pulse()

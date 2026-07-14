@@ -79,19 +79,23 @@ def build_device_info_packet(
     *,
     dest: int = CRSF_ADDRESS_FLIGHT_CONTROLLER,
     origin: int = CRSF_ADDRESS_CRSF_RECEIVER,
-    name: str = "PiBridgeRX",
+    name: str = "ExpressLRS",
 ) -> bytes:
-    """Reply used when the FC DEVICE_PINGs the receiver address (0xEC)."""
-    name_b = name.encode("ascii", errors="replace")[:14] + b"\x00"
+    """Reply used when the FC DEVICE_PINGs the receiver address (0xEC).
+
+    Layout matches CRSF extended DEVICE_INFO (dest/src + name + ids). Serial is
+    ASCII ``ELRS`` so Betaflight recognises an ExpressLRS-style RX.
+    """
+    name_b = name.encode("ascii", errors="replace")[:15] + b"\x00"
     payload = bytearray()
     payload.append(int(dest) & 0xFF)
     payload.append(int(origin) & 0xFF)
     payload.extend(name_b)
-    payload.extend((0x50494252).to_bytes(4, "big"))  # serial 'PIBR'
-    payload.extend((0x00000001).to_bytes(4, "big"))  # hardware id
-    payload.extend((0x00010000).to_bytes(4, "big"))  # firmware id
+    payload.extend(b"ELRS")  # serial number (BF/ELRS convention)
+    payload.extend((0).to_bytes(4, "big"))  # hardware version
+    payload.extend((0).to_bytes(4, "big"))  # software version
     payload.append(0)  # parameter count
-    payload.append(1)  # parameter version
+    payload.append(0)  # parameter protocol version
     return build_crsf_packet(dest, CRSFPacketType.DEVICE_INFO, bytes(payload))
 
 
@@ -100,6 +104,7 @@ def device_info_reply_for_ping(packet: Union[bytes, bytearray]) -> Optional[byte
     if len(packet) < 4 or packet[2] != CRSFPacketType.DEVICE_PING:
         return None
     payload = packet[3:-1]
+    # BF: dest (queried), origin (usually FC 0xC8)
     queried = int(payload[0]) if payload else CRSF_ADDRESS_BROADCAST
     if queried not in (
         CRSF_ADDRESS_BROADCAST,
@@ -108,7 +113,10 @@ def device_info_reply_for_ping(packet: Union[bytes, bytearray]) -> Optional[byte
     ):
         return None
     origin = CRSF_ADDRESS_CRSF_RECEIVER if queried == CRSF_ADDRESS_BROADCAST else queried
-    return build_device_info_packet(dest=CRSF_ADDRESS_FLIGHT_CONTROLLER, origin=origin)
+    reply_dest = int(payload[1]) if len(payload) >= 2 else CRSF_ADDRESS_FLIGHT_CONTROLLER
+    if reply_dest not in CRSF_FRAME_ADDRESSES:
+        reply_dest = CRSF_ADDRESS_FLIGHT_CONTROLLER
+    return build_device_info_packet(dest=reply_dest, origin=origin)
 
 
 def pack_crsf_to_bytes(channels: List[int]) -> bytes:
