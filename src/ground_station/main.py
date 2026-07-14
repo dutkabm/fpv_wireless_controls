@@ -2,7 +2,7 @@
 """
 PC / laptop: read a local joystick (controller_map.txt + on-screen map table), show 16 channel meters,
 TCP-handshake with the Pi bridge on Connect, then UDP-send 16-channel frames at the configured rate.
-Includes a Box tab for ``raspberry.box_server`` (status, LED, servo, camera stream URL).
+Includes Box and Drone telemetry tabs (``raspberry.box_server`` status + CRSF link).
 
 From the repo root::
 
@@ -211,6 +211,8 @@ def main():
         if bridge_connected:
             bridge_connected = False
             view.box_panel.disconnect()
+            view.telemetry_panel.disconnect()
+            view.clear_crsf_status()
             if sending:
                 sending = False
                 view.send_var.set("Start sending")
@@ -256,8 +258,10 @@ def main():
                     )
                     if handshake_box_token.strip():
                         view.box_panel.connect_with_token(handshake_box_token, quiet=True)
+                        view.telemetry_panel.connect_with_token(handshake_box_token, quiet=True)
                     else:
                         view.box_panel.disconnect()
+                        view.telemetry_panel.connect_with_token("", quiet=True)
                     # Start UDP immediately so the bridge receives frames (and --debug shows them)
                     # without requiring a separate "Start sending" click after Connect.
                     if sock is None:
@@ -295,6 +299,8 @@ def main():
                 else:
                     bridge_connected = False
                     view.box_panel.disconnect()
+                    view.telemetry_panel.disconnect()
+                    view.clear_crsf_status()
                     last_err = err or "Handshake failed"
                     status_text = "Connect failed"
                     view.connect_btn.configure(
@@ -374,8 +380,11 @@ def main():
         )
 
         box_tab_now = False
+        telem_tab_now = False
         try:
-            box_tab_now = view.tabs.get() == "Box"
+            tab = view.tabs.get()
+            box_tab_now = tab == "Box"
+            telem_tab_now = tab == "Telemetry"
         except Exception:
             pass
         if box_tab_now != view._prev_box_tab_selected:
@@ -385,6 +394,9 @@ def main():
                 view.send_btn.grid_remove()
             else:
                 view.send_btn.grid(row=1, column=0, padx=16, pady=8, sticky="w")
+        if telem_tab_now != view._prev_telem_tab_selected:
+            view._prev_telem_tab_selected = telem_tab_now
+            view.telemetry_panel.set_tab_visible(telem_tab_now)
 
         j = joy_ref.joystick
         if j is not None:
@@ -460,6 +472,7 @@ def main():
         nonlocal running
         running = False
         view.box_panel.shutdown()
+        view.telemetry_panel.shutdown()
         if sock is not None:
             sock.close()
         if joy_ref.joystick is not None:

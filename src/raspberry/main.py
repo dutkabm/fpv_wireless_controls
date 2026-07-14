@@ -42,7 +42,7 @@ from raspberry.crsf_output import (
     resolve_uart_port,
 )
 
-from common.crsf import pwm_channels_to_crsf_packet
+from common.crsf import CrsfSerialReader, pwm_channels_to_crsf_packet
 from common.network import (
     CHANNEL_PACKET_MAGIC,
     CHANNEL_PAYLOAD_LEN,
@@ -52,6 +52,7 @@ from common.network import (
     unpack_channel_datagram,
 )
 from common.tx_port import is_autoselect_serial_port, resolve_crsf_serial_port
+from raspberry import crsf_bridge_state
 
 log = logging.getLogger(__name__)
 
@@ -274,6 +275,12 @@ def main() -> None:
     current_serial_path: Optional[str] = None
     last_serial_attempt_s = 0.0
     waiting_announced = False
+    crsf_reader = CrsfSerialReader()
+    crsf_bridge_state.set_output_mode(output_mode)
+    crsf_bridge_state.set_serial(open_=False)
+
+    def _publish_telemetry() -> None:
+        crsf_bridge_state.update_telemetry(crsf_reader.telemetry)
 
     def close_serial() -> None:
         nonlocal ser, current_serial_path, waiting_announced
@@ -285,6 +292,9 @@ def main() -> None:
         ser = None
         current_serial_path = None
         waiting_announced = False
+        crsf_reader.telemetry.clear()
+        crsf_bridge_state.set_serial(open_=False)
+        _publish_telemetry()
 
     def try_open_serial() -> None:
         nonlocal ser, current_serial_path, waiting_announced
@@ -326,6 +336,9 @@ def main() -> None:
         ser = new_ser
         current_serial_path = resolved
         waiting_announced = False
+        crsf_reader.telemetry.clear()
+        crsf_bridge_state.set_serial(open_=True, path=resolved)
+        _publish_telemetry()
         if output_mode == CRSF_OUTPUT_UART:
             log.info("Serial open: %s @ %d (direct FC UART).", resolved, baud_rate)
         elif is_autoselect_serial_port(serial_port_pref):
@@ -413,6 +426,10 @@ def main() -> None:
                 ch = failsafe_pwm
             try:
                 ser.write(pwm_channels_to_crsf_packet(ch))
+                waiting = getattr(ser, "in_waiting", 0) or 0
+                if waiting > 0:
+                    crsf_reader.feed(ser.read(min(waiting, 512)))
+                    _publish_telemetry()
             except (serial.SerialException, OSError) as e:
                 log.warning(
                     "Serial write failed on %s (%s); closing and re-scanning.",

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 import customtkinter as ctk
 
 from modules.box_remote_ui import BoxRemotePanel
+from modules.telemetry_ui import TelemetryPanel, format_crsf_status
 
 _SCAN_MENU_FIRST = "(scan first)"
 _SCAN_MENU_NONE = "(none found)"
@@ -346,6 +347,10 @@ class NetworkJoystickUI:
         box_tab.grid_columnconfigure(0, weight=1)
         box_tab.grid_rowconfigure(0, weight=1)
 
+        telem_tab = self.tabs.add("Telemetry")
+        telem_tab.grid_columnconfigure(0, weight=1)
+        telem_tab.grid_rowconfigure(0, weight=1)
+
         title = ctk.CTkLabel(
             joy_tab,
             text="Network joystick → Pi bridge (TCP connect · UDP channels)",
@@ -365,6 +370,15 @@ class NetworkJoystickUI:
         self.connect_var = ctk.StringVar(value="Connect")
         self.connect_btn = ctk.CTkButton(form, textvariable=self.connect_var, width=120)
         self.connect_btn.grid(row=0, column=2, padx=(12, 0), pady=4, sticky="e")
+
+        self.crsf_status_lbl = ctk.CTkLabel(
+            form,
+            text="CRSF: —",
+            font=ctk.CTkFont(size=12),
+            text_color=("gray40", "gray65"),
+            anchor="w",
+        )
+        self.crsf_status_lbl.grid(row=0, column=3, padx=(12, 0), pady=4, sticky="w")
 
         ctk.CTkLabel(form, text="Subnet mask").grid(row=1, column=0, padx=(0, 8), pady=4, sticky="w")
         self.netmask_entry = ctk.CTkEntry(form, placeholder_text="255.255.255.0 or /24", width=160)
@@ -521,6 +535,15 @@ class NetworkJoystickUI:
         )
         self._prev_box_tab_selected = False
 
+        self.telemetry_panel = TelemetryPanel(
+            telem_tab,
+            root=root,
+            args=args,
+            get_target_ip=lambda: self.ip_entry.get(),
+            on_status=self._on_crsf_status,
+        )
+        self._prev_telem_tab_selected = False
+
         self.send_var = ctk.StringVar(value="Start sending")
         self.send_btn = ctk.CTkButton(
             root,
@@ -533,3 +556,15 @@ class NetworkJoystickUI:
 
         self.status_lbl = ctk.CTkLabel(root, text="", font=ctk.CTkFont(size=13), anchor="w")
         self.status_lbl.grid(row=2, column=0, padx=16, pady=(4, 16), sticky="ew")
+
+    def _on_crsf_status(self, d: dict) -> None:
+        text, kind = format_crsf_status(d)
+        colors = {
+            "off": ("gray40", "gray65"),
+            "serial": ("#b8860b", "#daa520"),
+            "link": ("seagreen", "#3cb371"),
+        }
+        self.crsf_status_lbl.configure(text=text, text_color=colors.get(kind, colors["off"]))
+
+    def clear_crsf_status(self) -> None:
+        self.crsf_status_lbl.configure(text="CRSF: —", text_color=("gray40", "gray65"))

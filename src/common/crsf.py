@@ -123,6 +123,20 @@ def parse_crsf_telemetry(packet: Union[bytes, bytearray], into: MutableMapping[s
         into["Speed"] = f"{ground_speed} km/h"
         into["Heading"] = f"{heading:.2f}°"
         into["Altitude"] = f"{altitude:.2f} m"
+    elif type_byte == CRSFPacketType.ATTITUDE and len(payload) >= 6:
+        # int16 radians × 10000
+        pitch = int.from_bytes(payload[0:2], byteorder="little", signed=True) / 10000.0
+        roll = int.from_bytes(payload[2:4], byteorder="little", signed=True) / 10000.0
+        yaw = int.from_bytes(payload[4:6], byteorder="little", signed=True) / 10000.0
+        into["Pitch"] = f"{pitch:.3f} rad"
+        into["Roll"] = f"{roll:.3f} rad"
+        into["Yaw"] = f"{yaw:.3f} rad"
+    elif type_byte == CRSFPacketType.FLIGHT_MODE and len(payload) >= 1:
+        end = payload.find(0)
+        raw = payload if end < 0 else payload[:end]
+        mode = raw.decode("utf-8", errors="replace").strip()
+        if mode:
+            into["Flight Mode"] = mode
 
 
 class CrsfSerialReader:

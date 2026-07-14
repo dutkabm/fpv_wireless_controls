@@ -167,6 +167,15 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
     def _fail(self, code: int, msg: str) -> None:
         self._send_json(code, {"ok": False, "error": msg})
 
+    def _crsf_fields(self) -> dict:
+        try:
+            from raspberry import crsf_bridge_state
+
+            return crsf_bridge_state.snapshot()
+        except Exception:
+            _LOG.debug("CRSF bridge state unavailable", exc_info=True)
+            return {}
+
     def _write_status_ok(self, box: BoxController) -> None:
         try:
             st = box.read_system_status()
@@ -182,6 +191,7 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
                     "hardware_ok": False,
                     "hardware_error": err,
                     "sensors_ok": False,
+                    **self._crsf_fields(),
                 },
             )
             return
@@ -198,6 +208,7 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
             d["servo_error"] = g.servo_error
         if g.drone_power_error:
             d["drone_power_error"] = g.drone_power_error
+        d.update(self._crsf_fields())
         self._send_json(200, {"ok": True, **d})
 
     def do_GET(self) -> None:
@@ -214,6 +225,7 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
                         "ok": True,
                         "hardware_ok": False,
                         "hardware_error": err or "unknown",
+                        **self._crsf_fields(),
                     },
                 )
                 return
