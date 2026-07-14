@@ -470,18 +470,26 @@ def main() -> None:
         telem = snap.get("crsf_telemetry") or {}
         log.info(
             "CRSF RX summary: bytes=%d frames_ok=%d telem=%d bad_crc=%d sync_skip=%d "
-            "buf=%d types=%s age=%s LQ=%s link_ok=%s",
+            "buf=%d addrs=%s types=%s age=%s LQ=%s link_ok=%s",
             crsf_reader.bytes_fed,
             crsf_reader.frames_ok,
             crsf_reader.frames_telem,
             crsf_reader.frames_bad_crc,
             crsf_reader.sync_skips,
             crsf_reader.buffer_len,
+            dict(crsf_reader.addr_hits),
             dict(crsf_reader.last_types),
             snap.get("crsf_telemetry_age_s"),
             telem.get("Uplink LQ", "—"),
             link_ok,
         )
+        if bytes_rx_total > 0 and crsf_reader.frames_ok == 0:
+            log.info(
+                "CRSF: bytes on wire but no valid frames (addrs tried=%s recent=%s). "
+                "Check baud/polarity; FC telemetry often uses addr 0xEA.",
+                dict(crsf_reader.addr_hits) or "{}",
+                crsf_reader.recent_raw_hex() or "—",
+            )
         if bytes_rx_total == 0:
             if output_mode == CRSF_OUTPUT_UART:
                 log.info(

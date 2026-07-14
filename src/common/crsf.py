@@ -5,8 +5,24 @@ from __future__ import annotations
 from enum import IntEnum
 from typing import Dict, List, MutableMapping, Optional, Union
 
-CRSF_SYNC_BYTE = 0xC8
+CRSF_SYNC_BYTE = 0xC8  # Flight controller / common sync used for RC TX
 CRSF_MAX_PACKET_SIZE = 64
+
+# Destination/source addresses that can lead a valid CRSF frame on the wire.
+# FC telemetry to a radio/RX often starts with 0xEA (not 0xC8).
+CRSF_FRAME_ADDRESSES = frozenset(
+    {
+        0x00,  # broadcast
+        0xC8,  # flight controller
+        0xEA,  # radio transmitter (FC → handset/RX telemetry)
+        0xEC,  # CRSF receiver
+        0xEE,  # CRSF transmitter
+    }
+)
+
+
+def is_crsf_frame_address(byte: int) -> bool:
+    return (byte & 0xFF) in CRSF_FRAME_ADDRESSES
 
 
 class CRSFPacketType(IntEnum):
@@ -36,6 +52,8 @@ def crc8_dvb_s2(data: Union[bytes, bytearray, List[int]]) -> int:
 
 def crsf_validate_frame(frame: Union[bytes, bytearray]) -> bool:
     if len(frame) < 4:
+        return False
+    if not is_crsf_frame_address(frame[0]):
         return False
     length = frame[1]
     if length != len(frame) - 2:
@@ -98,7 +116,7 @@ def parse_crsf_telemetry(packet: Union[bytes, bytearray], into: MutableMapping[s
 
     Returns True if a known telemetry type was applied (not just validated).
     """
-    if len(packet) < 4 or packet[0] != CRSF_SYNC_BYTE:
+    if len(packet) < 4 or not is_crsf_frame_address(packet[0]):
         return False
     type_byte = packet[2]
     payload = packet[3:-1]
@@ -117,8 +135,8 @@ def parse_crsf_telemetry(packet: Union[bytes, bytearray], into: MutableMapping[s
     if type_byte == CRSFPacketType.BATTERY_SENSOR and len(payload) >= 8:
         voltage = int.from_bytes(payload[0:2], byteorder="little") / 100.0
         current = int.from_bytes(payload[2:4], byteorder="little") / 100.0
-        capacity = int.from_bytes(payload[4:6], byteorder="little")
-        remaining = payload[6]
+        capacity = int.from_bytes(payload[4:7], byteorder="little")
+        remaining = payload[7]
         into["Voltage"] = f"{voltage:.2f} V"
         into["Current"] = f"{current:.2f} A"
         into["Capacity"] = f"{capacity} mAh"
@@ -169,6 +187,9 @@ class CrsfSerialReader:
         self.sync_skips = 0
         self.last_type_name = ""
         self.last_types: Dict[str, int] = {}
+        self.addr_hits: Dict[str, int] = {}
+        self._recent_raw = bytearray()
+        self._recent_raw_max = 64
 
     @property
     def buffer_len(self) -> int:
@@ -182,19 +203,29 @@ class CrsfSerialReader:
         self.sync_skips = 0
         self.last_type_name = ""
         self.last_types.clear()
+        self.addr_hits.clear()
+        self._recent_raw.clear()
+
+    def recent_raw_hex(self) -> str:
+        return bytes(self._recent_raw).hex(" ") if self._recent_raw else ""
 
     def feed(self, data: bytes) -> int:
         """Feed UART bytes. Returns count of validated CRSF frames in this chunk."""
         if not data:
             return 0
         self.bytes_fed += len(data)
+        self._recent_raw.extend(data)
+        if len(self._recent_raw) > self._recent_raw_max:
+            del self._recent_raw[: len(self._recent_raw) - self._recent_raw_max]
         self._buffer.extend(data)
         frames = 0
         while len(self._buffer) >= 4:
-            if self._buffer[0] != CRSF_SYNC_BYTE:
+            addr = self._buffer[0]
+            if not is_crsf_frame_address(addr):
                 self._buffer.pop(0)
                 self.sync_skips += 1
                 continue
+            self.addr_hits[f"0x{addr:02X}"] = self.addr_hits.get(f"0x{addr:02X}", 0) + 1
             length = self._buffer[1]
             if length > CRSF_MAX_PACKET_SIZE or length < 2:
                 self._buffer.pop(0)

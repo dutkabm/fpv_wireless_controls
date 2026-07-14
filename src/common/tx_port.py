@@ -101,9 +101,11 @@ def _sorted_usb_serial_ports(*, include_legacy: bool = False):
 
 
 def _looks_like_crsf_traffic(buf: bytearray) -> bool:
-    # Minimal check: extender address CRSF_SYNC and plausible frame length field
+    # Minimal check: known CRSF address byte and plausible frame length field
+    from common.crsf import is_crsf_frame_address
+
     for i in range(len(buf) - 2):
-        if buf[i] != CRSF_SYNC_BYTE:
+        if not is_crsf_frame_address(buf[i]):
             continue
         frame_len = buf[i + 1]
         if 2 <= frame_len <= 62:
