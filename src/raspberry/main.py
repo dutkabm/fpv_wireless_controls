@@ -38,6 +38,7 @@ from raspberry.crsf_output import (
     CRSF_OUTPUT_TX,
     CRSF_OUTPUT_UART,
     DEFAULT_UART_PORT,
+    baud_for_crsf_output,
     normalize_crsf_output_mode,
     resolve_uart_port,
 )
@@ -74,25 +75,19 @@ def _strip_inline_comment(value: Optional[str]) -> str:
     return s
 
 
-def load_serial_from_config(config_path: str) -> Tuple[str, int, str, str]:
-    """Return (tx_serial_pref, baud, crsf_output mode, uart_port)."""
+def load_serial_from_config(config_path: str) -> Tuple[str, str, str]:
+    """Return (tx_serial_pref, crsf_output mode, uart_port). Baud is fixed per mode."""
     default_port = "AUTO"
-    default_baud = 400000
     default_mode = CRSF_OUTPUT_UART
     default_uart = DEFAULT_UART_PORT
     if not os.path.exists(config_path):
-        return default_port, default_baud, default_mode, default_uart
+        return default_port, default_mode, default_uart
     cfg = configparser.ConfigParser()
     cfg.read(config_path)
     if "General" not in cfg:
-        return default_port, default_baud, default_mode, default_uart
+        return default_port, default_mode, default_uart
     g = cfg["General"]
     port = _strip_inline_comment(g.get("serial_port", fallback=default_port)).strip()
-    baud_raw = _strip_inline_comment(g.get("baud_rate", fallback=str(default_baud)))
-    try:
-        baud = int(baud_raw)
-    except ValueError:
-        baud = default_baud
     mode = normalize_crsf_output_mode(
         _strip_inline_comment(g.get("crsf_output", fallback=default_mode)),
         default=default_mode,
@@ -101,7 +96,7 @@ def load_serial_from_config(config_path: str) -> Tuple[str, int, str, str]:
         _strip_inline_comment(g.get("uart_port", fallback=default_uart)),
         default=default_uart,
     )
-    return port, baud, mode, uart
+    return port, mode, uart
 
 
 def _tcp_port_available(bind: str, port: int) -> bool:
@@ -164,7 +159,6 @@ def main() -> None:
         default=None,
         help="TX-module serial device (default: AUTO or from controller_map.txt General.serial_port)",
     )
-    ap.add_argument("--baud", type=int, default=None, help="Baud rate (default from controller_map.txt or 400000)")
     ap.add_argument(
         "--output",
         choices=(CRSF_OUTPUT_TX, CRSF_OUTPUT_UART),
@@ -179,7 +173,7 @@ def main() -> None:
     ap.add_argument(
         "--config",
         default=_DEFAULT_BRIDGE_CONFIG,
-        help="INI file path for baud/serial hints (controller_map.txt)",
+        help="INI file path for serial/output hints (controller_map.txt)",
     )
     ap.add_argument("--hz", type=float, default=50.0, help="CRSF transmit rate")
     ap.add_argument("--failsafe-ms", type=float, default=500.0, help="Hold last channels; fail-safe defaults after this latency")
@@ -201,10 +195,10 @@ def main() -> None:
     box_http_token = secrets.token_urlsafe(24)
     _start_box_http_server(box_http_token)
 
-    cfg_serial, cfg_baud, cfg_mode, cfg_uart = load_serial_from_config(args.config)
+    cfg_serial, cfg_mode, cfg_uart = load_serial_from_config(args.config)
     serial_port_pref = args.serial if args.serial is not None else cfg_serial
-    baud_rate = args.baud if args.baud is not None else cfg_baud
     output_mode = args.output if args.output is not None else cfg_mode
+    baud_rate = baud_for_crsf_output(output_mode)
     uart_port = resolve_uart_port(
         args.uart if args.uart is not None else cfg_uart,
         default=DEFAULT_UART_PORT,
@@ -262,7 +256,8 @@ def main() -> None:
     print(
         f"UDP {args.bind}:{args.port} · TCP handshake {args.bind}:{args.handshake_port} "
         f"as {bridge_name!r} ({args.hz:.0f} Hz CRSF). "
-        f"Output: {output_mode} (tx pref {serial_port_pref!r}, uart {uart_port!r})"
+        f"Output: {output_mode} @ {baud_rate} baud "
+        f"(tx pref {serial_port_pref!r}, uart {uart_port!r})"
     )
     if args.debug:
         log.info("UDP joystick: DEBUG log line per valid packet (--debug)")
@@ -324,7 +319,22 @@ def main() -> None:
                 waiting_announced = True
             return
         try:
-            new_ser = serial.Serial(resolved, baud_rate, timeout=0)
+            new_ser = serial.Serial(
+                resolved,
+                baud_rate,
+                timeout=0,
+                write_timeout=0,
+                inter_byte_timeout=None,
+                xonxoff=False,
+                rtscts=False,
+                dsrdtr=False,
+            )
+            # USB-CDC adapters often mute RX until DTR/RTS are asserted.
+            for attr, val in (("dtr", True), ("rts", True)):
+                try:
+                    setattr(new_ser, attr, val)
+                except Exception:
+                    pass
         except (serial.SerialException, OSError) as e:
             hint = ""
             if output_mode == CRSF_OUTPUT_UART and getattr(e, "errno", None) == 2:
@@ -340,11 +350,24 @@ def main() -> None:
         crsf_reader.reset_stats()
         crsf_bridge_state.set_serial(open_=True, path=resolved)
         _publish_telemetry()
-        log.info("CRSF telemetry RX enabled on %s (use --debug for per-frame logs)", resolved)
         if output_mode == CRSF_OUTPUT_UART:
-            log.info("Serial open: %s @ %d (direct FC UART).", resolved, baud_rate)
+            log.info(
+                "Serial open: %s @ %d (Pi emulates CRSF RX → FC). "
+                "Baud must match the FC CRSF port (configured %d).",
+                resolved,
+                baud_rate,
+                baud_rate,
+            )
+            log.info(
+                "Wire Pi TX→FC RX and Pi RX←FC TX (full duplex). "
+                "Expect battery/GPS/attitude from FC — not RF LQ (no radio link)."
+            )
         elif is_autoselect_serial_port(serial_port_pref):
             log.info("Serial open: %s @ %d (TX module auto-detected).", resolved, baud_rate)
+            log.info(
+                "CRSF link stats need bidirectional USB CRSF "
+                "(ELRS /hardware.html RX=3 TX=1, or FTDI inverted half-duplex with RX tied)."
+            )
         elif str(serial_port_pref).strip() != str(resolved).strip():
             log.info(
                 "Serial open: %s @ %d (configured %r unavailable; using detected).",
@@ -354,6 +377,11 @@ def main() -> None:
             )
         else:
             log.info("Serial open: %s @ %d (TX module).", resolved, baud_rate)
+        log.info(
+            "CRSF telemetry RX enabled on %s mode=%s (use --debug for per-frame logs)",
+            resolved,
+            output_mode,
+        )
 
     try_open_serial()
     last_serial_attempt_s = time.monotonic()
@@ -426,11 +454,13 @@ def main() -> None:
             last_link_ok = link_ok
             telem = snap.get("crsf_telemetry") or {}
             log.info(
-                "CRSF link %s (serial=%s path=%s mode=%s LQ=%s keys=%s)",
+                "CRSF link %s (serial=%s path=%s mode=%s fc_ok=%s rf_ok=%s LQ=%s keys=%s)",
                 "OK" if link_ok else "down",
                 snap.get("crsf_serial_open"),
                 snap.get("crsf_serial_path") or "—",
                 snap.get("crsf_output") or "—",
+                snap.get("crsf_fc_ok"),
+                snap.get("crsf_rf_link_ok"),
                 telem.get("Uplink LQ", "—"),
                 sorted(telem.keys()) if telem else [],
             )
@@ -453,10 +483,22 @@ def main() -> None:
             link_ok,
         )
         if bytes_rx_total == 0:
-            log.info(
-                "CRSF: no UART bytes received yet — TX/FC may not be sending telemetry "
-                "on this UART (check ELRS telemetry / FC CRSF TX pin)."
-            )
+            if output_mode == CRSF_OUTPUT_UART:
+                log.info(
+                    "CRSF: 0 UART RX bytes (mode=uart baud=%d path=%s). "
+                    "Confirm FC serial baud is %d, CRSF protocol on that port, "
+                    "and Pi RX ← FC TX is wired. Telemetry = FC sensors, not RF LQ.",
+                    baud_rate,
+                    current_serial_path,
+                    baud_rate,
+                )
+            else:
+                log.info(
+                    "CRSF: 0 UART RX bytes (mode=tx path=%s). "
+                    "USB ELRS: set /hardware.html CRSF RX=3 TX=1. "
+                    "FTDI: inverted half-duplex so module TX returns on the adapter RX.",
+                    current_serial_path,
+                )
 
     try:
         while True:

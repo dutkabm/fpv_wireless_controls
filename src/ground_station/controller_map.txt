@@ -1,7 +1,5 @@
 [General]
 joystick_index = 0
-baud_rate = 400000
-# CRSF output on the Pi bridge: tx = USB ELRS/Crossfire module, uart = Pi UART → FC
 crsf_output = uart
 uart_port = serial0
 # serial_port = AUTO   # TX-module USB preference when crsf_output=tx
@@ -25,4 +23,3 @@ button_8 = channel:13, invert:false
 button_9 = channel:14, invert:false
 button_10 = channel:15, invert:false
 button_11 = channel:16, invert:false
-

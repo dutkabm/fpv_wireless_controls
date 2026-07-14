@@ -1,8 +1,9 @@
 """
 CRSF serial output mode for the Pi bridge (chosen at process start).
 
-``tx`` — USB-UART to an ELRS/Crossfire TX module (wireless).
-``uart`` — Pi SoC UART wired directly to the flight controller CRSF RX.
+``tx`` — USB-UART to an ELRS/Crossfire TX module (wireless), baud ``CRSF_BAUD_TX``.
+``uart`` — Pi SoC UART emulates an ELRS RX wired to the flight controller
+(CRSF RC out + telemetry in), baud ``CRSF_BAUD_UART``.
 """
 
 from __future__ import annotations
@@ -13,6 +14,10 @@ from typing import Optional
 CRSF_OUTPUT_TX = "tx"
 CRSF_OUTPUT_UART = "uart"
 CRSF_OUTPUT_MODES = (CRSF_OUTPUT_TX, CRSF_OUTPUT_UART)
+
+# Fixed CRSF serial baud by output mode (not configurable via controller_map.txt).
+CRSF_BAUD_UART = 115200  # Pi-as-RX ↔ flight controller
+CRSF_BAUD_TX = 400000  # USB ELRS / Crossfire TX module
 
 # Raspberry Pi primary UART (GPIO 14/15). Prefer the stable symlink; it points at
 # ttyAMA0 / ttyS0 / ttyAMA10 depending on model and config.
@@ -57,6 +62,13 @@ def normalize_crsf_output_mode(value: Optional[str], *, default: str = CRSF_OUTP
     if s in CRSF_OUTPUT_MODES:
         return s
     return default
+
+
+def baud_for_crsf_output(mode: str) -> int:
+    """Return the fixed baud for ``tx`` or ``uart`` output mode."""
+    if normalize_crsf_output_mode(mode) == CRSF_OUTPUT_TX:
+        return CRSF_BAUD_TX
+    return CRSF_BAUD_UART
 
 
 def resolve_uart_port(value: Optional[str], *, default: str = DEFAULT_UART_PORT) -> str:

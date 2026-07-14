@@ -246,7 +246,7 @@ def save_controller_config(
 ) -> None:
     """Write ``[General].joystick_index`` and mapping sections to ``config_path``.
 
-    Other ``[General]`` keys (e.g. ``baud_rate``, ``serial_port``) are kept when the file
+    Other ``[General]`` keys (e.g. ``crsf_output``, ``serial_port``, ``uart_port``) are kept when the file
     already exists. Comments in the file are not preserved (ConfigParser rewrite).
     """
     cfg = configparser.ConfigParser()

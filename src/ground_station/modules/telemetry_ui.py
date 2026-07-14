@@ -59,10 +59,15 @@ def format_crsf_status(d: dict) -> tuple[str, str]:
     path = (d.get("crsf_serial_path") or "").strip()
     mode = (d.get("crsf_output") or "").strip()
     suffix = path or mode or "open"
-    if d.get("crsf_link_ok"):
-        telem = d.get("crsf_telemetry") or {}
+    telem = d.get("crsf_telemetry") or {}
+    if d.get("crsf_rf_link_ok"):
         lq = telem.get("Uplink LQ", "?")
-        return f"CRSF: link OK · LQ {lq} · {suffix}", "link"
+        return f"CRSF: RF link · LQ {lq} · {suffix}", "link"
+    if d.get("crsf_fc_ok") or d.get("crsf_link_ok"):
+        mode_s = telem.get("Flight Mode")
+        volt = telem.get("Voltage")
+        detail = mode_s or volt or "telem"
+        return f"CRSF: FC OK · {detail} · {suffix}", "link"
     return f"CRSF: serial open · {suffix}", "serial"
 
 
@@ -113,7 +118,9 @@ class TelemetryPanel:
                 ("Serial", "crsf_serial_open"),
                 ("Path", "crsf_serial_path"),
                 ("Output", "crsf_output"),
-                ("Link", "crsf_link_ok"),
+                ("FC telem", "crsf_fc_ok"),
+                ("RF link", "crsf_rf_link_ok"),
+                ("Connected", "crsf_link_ok"),
                 ("Telemetry age", "crsf_telemetry_age_s"),
             )
         ):
@@ -269,9 +276,11 @@ class TelemetryPanel:
         if self._last_logged_link is None or link != self._last_logged_link:
             self._last_logged_link = link
             _LOG.info(
-                "CRSF UI link %s · serial=%s path=%s LQ=%s age=%s keys=%s",
+                "CRSF UI link %s · serial=%s fc=%s rf=%s path=%s LQ=%s age=%s keys=%s",
                 "OK" if link else "down",
                 d.get("crsf_serial_open"),
+                d.get("crsf_fc_ok"),
+                d.get("crsf_rf_link_ok"),
                 d.get("crsf_serial_path") or "—",
                 telem.get("Uplink LQ", "—"),
                 d.get("crsf_telemetry_age_s"),
@@ -309,6 +318,8 @@ class TelemetryPanel:
         self._conn_labels["crsf_serial_open"].configure(text=yes_no(open_))
         self._conn_labels["crsf_serial_path"].configure(text=d.get("crsf_serial_path") or "—")
         self._conn_labels["crsf_output"].configure(text=d.get("crsf_output") or "—")
+        self._conn_labels["crsf_fc_ok"].configure(text=yes_no(d.get("crsf_fc_ok")))
+        self._conn_labels["crsf_rf_link_ok"].configure(text=yes_no(d.get("crsf_rf_link_ok")))
         self._conn_labels["crsf_link_ok"].configure(text=yes_no(d.get("crsf_link_ok")))
         age = d.get("crsf_telemetry_age_s")
         self._conn_labels["crsf_telemetry_age_s"].configure(
