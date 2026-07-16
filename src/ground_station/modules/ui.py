@@ -371,15 +371,6 @@ class NetworkJoystickUI:
         self.connect_btn = ctk.CTkButton(form, textvariable=self.connect_var, width=120)
         self.connect_btn.grid(row=0, column=2, padx=(12, 0), pady=4, sticky="e")
 
-        self.crsf_status_lbl = ctk.CTkLabel(
-            form,
-            text="CRSF: —",
-            font=ctk.CTkFont(size=12),
-            text_color=("gray40", "gray65"),
-            anchor="w",
-        )
-        self.crsf_status_lbl.grid(row=0, column=3, padx=(12, 0), pady=4, sticky="w")
-
         ctk.CTkLabel(form, text="Subnet mask").grid(row=1, column=0, padx=(0, 8), pady=4, sticky="w")
         self.netmask_entry = ctk.CTkEntry(form, placeholder_text="255.255.255.0 or /24", width=160)
         self.netmask_entry.grid(row=1, column=1, padx=0, pady=4, sticky="w")
@@ -554,8 +545,21 @@ class NetworkJoystickUI:
         )
         self.send_btn.grid(row=1, column=0, padx=16, pady=8, sticky="w")
 
-        self.status_lbl = ctk.CTkLabel(root, text="", font=ctk.CTkFont(size=13), anchor="w")
-        self.status_lbl.grid(row=2, column=0, padx=16, pady=(4, 16), sticky="ew")
+        status_bar = ctk.CTkFrame(root, fg_color="transparent")
+        status_bar.grid(row=2, column=0, padx=16, pady=(4, 16), sticky="ew")
+        status_bar.grid_columnconfigure(0, weight=1)
+
+        self.status_lbl = ctk.CTkLabel(status_bar, text="", font=ctk.CTkFont(size=13), anchor="w")
+        self.status_lbl.grid(row=0, column=0, sticky="ew")
+
+        self.crsf_status_lbl = ctk.CTkLabel(
+            status_bar,
+            text="CRSF: —",
+            font=ctk.CTkFont(size=13),
+            text_color=("gray40", "gray65"),
+            anchor="e",
+        )
+        self.crsf_status_lbl.grid(row=0, column=1, padx=(12, 0), sticky="e")
 
     def _on_crsf_status(self, d: dict) -> None:
         text, kind = format_crsf_status(d)

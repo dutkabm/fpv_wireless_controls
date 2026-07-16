@@ -197,8 +197,11 @@ class BoxOutputs:
             self.led_error = str(e)
 
         try:
+            # initial_value=None → PWM detached until servo_start(); gpiozero
+            # default is 0 (neutral), which would drive the servo on process start.
             self._servo = Servo(
                 self._servo_pin,
+                initial_value=None,
                 min_pulse_width=1.0 / 1000,
                 max_pulse_width=2.0 / 1000,
             )
