@@ -19,7 +19,7 @@ Routes (JSON):
 - ``GET /api/status`` — open (no token); ``hardware_ok``, live fields from :class:`raspberry.models.SystemStatus`.
 - ``POST /api/led`` — token required; body ``{"on": true|false}``.
 - ``POST /api/servo`` — token required; body ``{"active": true|false}`` (false detaches PWM).
-- ``POST /api/camera`` — token required; body ``{"streaming": true|false}`` (UDP MPEG-TS on port 8888).
+- ``POST /api/camera`` — token required; body ``{"streaming": true|false}`` (RTP/H264 UDP on port 5004).
 - ``POST /api/drone-power`` — token required; body ``{"on": true|false}``.
 """
 

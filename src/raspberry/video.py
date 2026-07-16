@@ -1,37 +1,39 @@
 """
-Raspberry Pi camera video streaming (subprocess ``rpicam-vid`` / libcamera).
+Raspberry Pi camera video streaming (hardware H264 + GStreamer RTP).
 
-No extra pip dependencies; uses the system camera stack on Pi OS Bookworm.
+Pi pipeline (rpicam-vid stdout → gst-launch RTP/UDP)::
 
-Default stream: UDP MPEG-TS on port 8888 to the ground-station client that enabled video via the box HTTP API.
+    rpicam-vid -t 0 --width 1280 --height 720 --framerate 60 --inline --nopreview -o - \\
+      | gst-launch-1.0 fdsrc ! h264parse ! rtph264pay config-interval=-1 \\
+        ! udpsink host=<client> port=5004
 
-Viewers: ``ffplay -f mpegts -fflags nobuffer -flags low_delay -framedrop -i 'udp://0.0.0.0:8888?listen=1'`` (or ``mpv``).
+Mac viewer::
+
+    gst-launch-1.0 udpsrc port=5004 \\
+      caps="application/x-rtp,payload=96,encoding-name=H264" \\
+      ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert \\
+      ! video/x-raw,format=UYVY ! osxvideosink sync=false
 
 Environment (optional):
 
-- ``BOX_CAMERA_WIDTH``, ``BOX_CAMERA_HEIGHT``, ``BOX_CAMERA_FRAMERATE``,
-  ``BOX_CAMERA_BITRATE`` (default ``2500000``), ``BOX_CAMERA_INTRA`` (default ``15``),
-  ``BOX_CAMERA_LOW_LATENCY`` (default ``1`` → ``--low-latency``).
+- ``BOX_CAMERA_WIDTH`` (default ``1280``), ``BOX_CAMERA_HEIGHT`` (default ``720``),
+  ``BOX_CAMERA_FRAMERATE`` (default ``60``), ``BOX_CAMERA_BITRATE``,
+  ``BOX_CAMERA_INDEX``, ``BOX_CAMERA_SKIP_PROBE``.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
+import signal
 import subprocess
 import time
 from typing import List, Optional, Tuple
 
-# UDP MPEG-TS on port 8888 (Pi → connected HTTP client IP).
-STREAM_PORT = 8888
-
-
-def _stream_udp_output(client_host: str) -> str:
-    host = (client_host or "").strip()
-    if not host:
-        raise ValueError("no connected client IP for UDP stream")
-    return f"udp://{host}:{STREAM_PORT}"
+# RTP/H264 UDP (Pi → connected HTTP client IP).
+STREAM_PORT = 5004
 
 
 def _which_camera_tool(*names: str) -> Optional[str]:
@@ -47,72 +49,54 @@ def _camera_vid_binary() -> Optional[str]:
     return _which_camera_tool("rpicam-vid", "libcamera-vid")
 
 
+def _gst_launch_binary() -> Optional[str]:
+    return _which_camera_tool("gst-launch-1.0")
+
+
 def _normalize_camera_error(raw: str) -> str:
     t = (raw or "").strip()
     low = t.lower()
     if not t:
-        return "Camera stream failed (no details from rpicam-vid)."
+        return "Camera stream failed (no details from rpicam-vid / gstreamer)."
     if "no cameras available" in low or "no camera available" in low:
         return "No camera detected by libcamera."
     if "command not found" in low or "no such file" in low:
+        if "gst-launch" in low:
+            return "gst-launch-1.0 not found. Install GStreamer on the Pi."
         return "rpicam-vid / libcamera-vid not found. Install Pi OS camera apps."
     if "failed to send" in low and "socket" in low:
         return (
-            "Stream socket error (rpicam-vid).\n"
-            "• Turn Video ON on the Pi, then run ffplay on the ground station\n"
-            f"• Viewer: Box tab Play video (UDP listen on port {STREAM_PORT})\n"
+            "Stream socket error (udpsink).\n"
+            "• Turn Video ON on the Pi, then start the GStreamer viewer on the Mac\n"
+            f"• Viewer: Box tab Play video (RTP/H264 UDP port {STREAM_PORT})\n"
             "• If playback stops, toggle Video off/on on the Box tab"
         )
     return t[-1200:]
 
 
-def camera_stream_client_url(port: Optional[int] = None) -> str:
-    """UDP input URL (listen on the ground station for Pi unicast)."""
+def gstreamer_viewer_argv(port: Optional[int] = None, *, macos: bool = True) -> List[str]:
+    """Ground-station ``gst-launch-1.0`` viewer for the Pi RTP/H264 stream."""
+    gst = _gst_launch_binary() or "gst-launch-1.0"
     p = port if port is not None else STREAM_PORT
-    return f"udp://0.0.0.0:{p}?listen=1&reuse=1"
-
-
-def ffplay_low_latency_argv(ffplay_bin: str, input_url: Optional[str] = None) -> List[str]:
-    """``ffplay`` with minimal buffering (Box tab / manual launch)."""
-    url = input_url if input_url is not None else camera_stream_client_url()
-    return [
-        ffplay_bin,
-        "-loglevel",
-        "warning",
-        "-hwaccel",
-        "none",
-        "-fflags",
-        "nobuffer",
-        "-flags",
-        "low_delay",
-        "-framedrop",
-        "-f",
-        "mpegts",
-        "-i",
-        url,
-    ]
-
-
-def mpv_low_latency_argv(mpv_bin: str, input_url: Optional[str] = None) -> List[str]:
-    """``mpv`` with minimal buffering (preferred on macOS)."""
-    url = input_url if input_url is not None else camera_stream_client_url()
-    return [
-        mpv_bin,
-        "--no-terminal",
-        "--profile=low-latency",
-        "--cache=no",
-        "--untimed",
-        "--no-correct-pts",
-        url,
-    ]
-
-
-def _low_latency_enabled() -> bool:
-    return os.environ.get("BOX_CAMERA_LOW_LATENCY", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
+    sink = (
+        ["videoconvert", "!", "video/x-raw,format=UYVY", "!", "osxvideosink", "sync=false"]
+        if macos
+        else ["videoconvert", "!", "autovideosink", "sync=false"]
     )
+    return [
+        gst,
+        "udpsrc",
+        f"port={p}",
+        'caps=application/x-rtp,payload=96,encoding-name=H264',
+        "!",
+        "rtph264depay",
+        "!",
+        "h264parse",
+        "!",
+        "avdec_h264",
+        "!",
+        *sink,
+    ]
 
 
 def probe_cameras(timeout: float = 5.0) -> Tuple[bool, str]:
@@ -148,43 +132,59 @@ def probe_cameras(timeout: float = 5.0) -> Tuple[bool, str]:
 
 
 def _camera_stream_argv(client_host: str) -> List[str]:
-    """``rpicam-vid`` UDP MPEG-TS to ``client_host``."""
+    """
+    Shell pipeline: hardware H264 from ``rpicam-vid`` → GStreamer RTP/UDP to ``client_host``.
+    """
     vid = _camera_vid_binary()
     if vid is None:
         raise FileNotFoundError("rpicam-vid and libcamera-vid not found in PATH")
-    w = os.environ.get("BOX_CAMERA_WIDTH", "640")
-    h = os.environ.get("BOX_CAMERA_HEIGHT", "480")
-    fps = os.environ.get("BOX_CAMERA_FRAMERATE", "25")
-    bitrate = os.environ.get("BOX_CAMERA_BITRATE", "2500000")
-    intra = os.environ.get("BOX_CAMERA_INTRA", "15")
-    argv = [
-        vid,
+    gst = _gst_launch_binary()
+    if gst is None:
+        raise FileNotFoundError("gst-launch-1.0 not found in PATH")
+    host = (client_host or "").strip()
+    if not host:
+        raise ValueError("no connected client IP for UDP stream")
+
+    w = os.environ.get("BOX_CAMERA_WIDTH", "1280")
+    h = os.environ.get("BOX_CAMERA_HEIGHT", "720")
+    fps = os.environ.get("BOX_CAMERA_FRAMERATE", "60")
+    bitrate = os.environ.get("BOX_CAMERA_BITRATE", "").strip()
+    cam_idx = os.environ.get("BOX_CAMERA_INDEX", "").strip()
+
+    vid_parts = [
+        shlex.quote(vid),
         "-t",
         "0",
-        "-n",
         "--width",
-        w,
+        shlex.quote(w),
         "--height",
-        h,
+        shlex.quote(h),
         "--framerate",
-        fps,
-        "--bitrate",
-        bitrate,
-        "--intra",
-        intra,
-        "--codec",
-        "libav",
-        "--libav-format",
-        "mpegts",
-        "-o",
-        _stream_udp_output(client_host),
+        shlex.quote(fps),
+        "--inline",
+        "--nopreview",
     ]
-    if _low_latency_enabled():
-        argv.append("--low-latency")
-    cam_idx = os.environ.get("BOX_CAMERA_INDEX", "").strip()
     if cam_idx:
-        argv[1:1] = ["--camera", cam_idx]
-    return argv
+        vid_parts.extend(["--camera", shlex.quote(cam_idx)])
+    if bitrate:
+        vid_parts.extend(["--bitrate", shlex.quote(bitrate)])
+    vid_parts.extend(["-o", "-"])
+
+    gst_parts = [
+        shlex.quote(gst),
+        "fdsrc",
+        "!",
+        "h264parse",
+        "!",
+        "rtph264pay",
+        "config-interval=-1",
+        "!",
+        "udpsink",
+        f"host={shlex.quote(host)}",
+        f"port={STREAM_PORT}",
+    ]
+    pipeline = f"{' '.join(vid_parts)} | {' '.join(gst_parts)}"
+    return ["bash", "-o", "pipefail", "-c", pipeline]
 
 
 def _drain_stderr(proc: subprocess.Popen) -> str:
@@ -199,11 +199,42 @@ def _drain_stderr(proc: subprocess.Popen) -> str:
         return ""
 
 
+def _terminate_process_group(proc: subprocess.Popen) -> None:
+    """Stop the shell pipeline (rpicam-vid | gst-launch) as a process group."""
+    if proc.pid is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=4.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=2.0)
+    except Exception:
+        pass
+
+
 class CameraStream:
     """
     Run/stop a Raspberry Pi camera pipeline in a subprocess (no extra Python deps).
 
-    Default: UDP MPEG-TS on port 8888.
+    Default: hardware H264 → GStreamer RTP/UDP on port 5004.
     """
 
     def __init__(self, argv: Optional[List[str]] = None):
@@ -299,23 +330,12 @@ class CameraStream:
         return True
 
     def stop(self) -> None:
-        """Terminate the streamer subprocess."""
+        """Terminate the streamer subprocess (and pipeline children)."""
         proc = self._proc
         self._proc = None
         if proc is None:
             return
-        try:
-            proc.terminate()
-            try:
-                proc.wait(timeout=4.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                try:
-                    proc.wait(timeout=2.0)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        _terminate_process_group(proc)
         try:
             if proc.stderr:
                 proc.stderr.close()

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -13,13 +12,13 @@ import tkinter.messagebox as tk_messagebox
 
 from modules.box_remote import BOX_HTTP_PORT, BoxRemoteClient
 
-VIDEO_STREAM_PORT = 8888
+VIDEO_STREAM_PORT = 5004
 TAB_POLL_MS = 3000  # Box tab visible: GET /api/status interval
 
 
 class BoxRemotePanel:
     """
-    Status poll + LED / servo / camera controls; ffplay UDP viewer.
+    Status poll + LED / servo / camera controls; GStreamer RTP/H264 viewer.
 
     ``get_target_ip`` should return the same IPv4 as the joystick bridge Target IP field.
     """
@@ -105,23 +104,12 @@ class BoxRemotePanel:
         self._video_proc: Optional[subprocess.Popen] = None
 
     @staticmethod
-    def _find_mpv() -> Optional[str]:
-        return shutil.which("mpv")
+    def _find_gst_launch() -> Optional[str]:
+        return shutil.which("gst-launch-1.0")
 
-    @staticmethod
-    def _find_ffplay() -> Optional[str]:
-        return shutil.which("ffplay")
-
-    def _find_video_player(self) -> tuple[Optional[str], str]:
-        """Return (binary path, ``mpv`` or ``ffplay``). Prefers mpv on macOS."""
-        if sys.platform == "darwin":
-            mpv = self._find_mpv()
-            if mpv:
-                return mpv, "mpv"
-        ffplay = self._find_ffplay()
-        if ffplay:
-            return ffplay, "ffplay"
-        return self._find_mpv(), "mpv"
+    def _find_video_player(self) -> Optional[str]:
+        """Return ``gst-launch-1.0`` path if available."""
+        return self._find_gst_launch()
 
     def connect_with_token(self, token: str, *, quiet: bool = False) -> bool:
         """Start box HTTP session after joystick bridge Connect (token from handshake)."""
@@ -248,50 +236,34 @@ class BoxRemotePanel:
         if prev_cam and not cam_on:
             self._stop_video_player()
 
-    def _video_play_url(self) -> str:
-        return f"udp://0.0.0.0:{VIDEO_STREAM_PORT}?listen=1&reuse=1"
-
-    def _mpv_argv(self, mpv_bin: str) -> list[str]:
+    def _play_argv(self, gst_bin: str) -> list[str]:
+        """RTP/H264 UDP viewer matching the Pi ``rtph264pay`` stream."""
+        sink: list[str]
+        if sys.platform == "darwin":
+            sink = [
+                "videoconvert",
+                "!",
+                "video/x-raw,format=UYVY",
+                "!",
+                "osxvideosink",
+                "sync=false",
+            ]
+        else:
+            sink = ["videoconvert", "!", "autovideosink", "sync=false"]
         return [
-            mpv_bin,
-            "--no-terminal",
-            "--profile=low-latency",
-            "--cache=no",
-            "--untimed",
-            "--no-correct-pts",
-            self._video_play_url(),
+            gst_bin,
+            "udpsrc",
+            f"port={VIDEO_STREAM_PORT}",
+            'caps=application/x-rtp,payload=96,encoding-name=H264',
+            "!",
+            "rtph264depay",
+            "!",
+            "h264parse",
+            "!",
+            "avdec_h264",
+            "!",
+            *sink,
         ]
-
-    def _ffplay_argv(self, ffplay_bin: str) -> list[str]:
-        return [
-            ffplay_bin,
-            "-loglevel",
-            "warning",
-            "-hwaccel",
-            "none",
-            "-fflags",
-            "nobuffer",
-            "-flags",
-            "low_delay",
-            "-framedrop",
-            "-f",
-            "mpegts",
-            "-i",
-            self._video_play_url(),
-        ]
-
-    def _play_argv(self, player_bin: str, kind: str) -> list[str]:
-        if kind == "mpv":
-            return self._mpv_argv(player_bin)
-        return self._ffplay_argv(player_bin)
-
-    @staticmethod
-    def _player_env(kind: str) -> dict[str, str]:
-        env = os.environ.copy()
-        if kind == "ffplay" and sys.platform == "darwin":
-            env["SDL_VIDEODRIVER"] = "cocoa"
-            env.pop("DISPLAY", None)
-        return env
 
     def _stop_video_player(self) -> None:
         proc = self._video_proc
@@ -424,21 +396,19 @@ class BoxRemotePanel:
         self._apply_status(d)
 
     def _start_video_player(self) -> bool:
-        player_bin, kind = self._find_video_player()
-        if not player_bin:
+        gst_bin = self._find_video_player()
+        if not gst_bin:
             tk_messagebox.showinfo(
                 "Box",
-                "No video player found.\n"
-                "Install mpv: brew install mpv\n"
-                "Or ffmpeg (ffplay): brew install ffmpeg",
+                "gst-launch-1.0 not found.\n"
+                "Install GStreamer: brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav",
                 parent=self._root,
             )
             return False
         self._stop_video_player()
         try:
             self._video_proc = subprocess.Popen(
-                self._play_argv(player_bin, kind),
-                env=self._player_env(kind),
+                self._play_argv(gst_bin),
                 start_new_session=True,
             )
         except OSError as e:
@@ -451,13 +421,11 @@ class BoxRemotePanel:
         if self.client is None:
             return
         if streaming:
-            player_bin, _ = self._find_video_player()
-            if not player_bin:
+            if not self._find_video_player():
                 tk_messagebox.showinfo(
                     "Box",
-                    "No video player found.\n"
-                    "Install mpv: brew install mpv\n"
-                    "Or ffmpeg (ffplay): brew install ffmpeg",
+                    "gst-launch-1.0 not found.\n"
+                    "Install GStreamer: brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav",
                     parent=self._root,
                 )
                 return
