@@ -18,7 +18,7 @@ TAB_POLL_MS = 3000  # Box tab visible: GET /api/status interval
 
 class BoxRemotePanel:
     """
-    Status poll + LED / servo / camera controls; GStreamer RTP/H264 viewer.
+    Status poll + LED / servo / camera controls; GStreamer RTP viewer (H264 MIPI or JPEG USB).
 
     ``get_target_ip`` should return the same IPv4 as the joystick bridge Target IP field.
     """
@@ -38,6 +38,7 @@ class BoxRemotePanel:
         self._box_tab_visible = False
         self._poll_after_id: Optional[str] = None
         self._last_status: dict[str, Any] = {}
+        self._controls_enabled = False
 
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(0, weight=1)
@@ -70,6 +71,15 @@ class BoxRemotePanel:
         )
         self.drone_power_toggle_b.grid(row=0, column=3, padx=4, pady=4, sticky="ew")
         row += 1
+        self.usb_cam_var = ctk.BooleanVar(value=False)  # unchecked = MIPI (default)
+        self.usb_cam_cb = ctk.CTkCheckBox(
+            panel,
+            text="USB camera (unchecked = MIPI)",
+            variable=self.usb_cam_var,
+            state="disabled",
+        )
+        self.usb_cam_cb.grid(row=row, column=0, padx=8, pady=(0, 4), sticky="w")
+        row += 1
 
         ctk.CTkLabel(panel, text="Status", font=ctk.CTkFont(weight="bold")).grid(
             row=row, column=0, padx=4, pady=(12, 4), sticky="w"
@@ -90,6 +100,7 @@ class BoxRemotePanel:
             ("Env error", "env_error"),
             ("Batt error", "battery_error"),
             ("Camera", "camera_streaming"),
+            ("Cam source", "camera_source"),
             ("LED", "led_on"),
             ("Servo", "servo_active"),
             ("Drone power", "drone_power_on"),
@@ -102,6 +113,7 @@ class BoxRemotePanel:
             self._status_labels[key] = lab
 
         self._video_proc: Optional[subprocess.Popen] = None
+        self._video_source: str = "mipi"
 
     @staticmethod
     def _find_gst_launch() -> Optional[str]:
@@ -186,6 +198,8 @@ class BoxRemotePanel:
         self._last_status = {}
         self._set_controls_enabled(False)
         self._sync_toggle_buttons({})
+        self.usb_cam_var.set(False)
+        self._video_source = "mipi"
         self._stop_video_player()
 
     def shutdown(self) -> None:
@@ -236,20 +250,39 @@ class BoxRemotePanel:
         if prev_cam and not cam_on:
             self._stop_video_player()
 
-    def _play_argv(self, gst_bin: str) -> list[str]:
-        """RTP/H264 UDP viewer matching the Pi ``rtph264pay`` stream."""
-        sink: list[str]
+    def _selected_camera_source(self) -> str:
+        return "usb" if bool(self.usb_cam_var.get()) else "mipi"
+
+    def _play_argv(self, gst_bin: str, source: str = "mipi") -> list[str]:
+        """RTP UDP viewer: H264 for MIPI, JPEG for USB."""
+        src = "usb" if (source or "").strip().lower() == "usb" else "mipi"
         if sys.platform == "darwin":
-            sink = [
-                "videoconvert",
-                "!",
-                "video/x-raw,format=UYVY",
-                "!",
-                "osxvideosink",
-                "sync=false",
-            ]
+            if src == "usb":
+                sink = ["videoconvert", "!", "osxvideosink", "sync=false"]
+            else:
+                sink = [
+                    "videoconvert",
+                    "!",
+                    "video/x-raw,format=UYVY",
+                    "!",
+                    "osxvideosink",
+                    "sync=false",
+                ]
         else:
             sink = ["videoconvert", "!", "autovideosink", "sync=false"]
+        if src == "usb":
+            return [
+                gst_bin,
+                "udpsrc",
+                f"port={VIDEO_STREAM_PORT}",
+                'caps=application/x-rtp,encoding-name=JPEG,payload=26',
+                "!",
+                "rtpjpegdepay",
+                "!",
+                "jpegdec",
+                "!",
+                *sink,
+            ]
         return [
             gst_bin,
             "udpsrc",
@@ -281,9 +314,18 @@ class BoxRemotePanel:
                 pass
 
     def _set_controls_enabled(self, on: bool) -> None:
+        self._controls_enabled = bool(on)
         st = "normal" if on else "disabled"
         for b in (self.cam_toggle_b, self.led_toggle_b, self.servo_toggle_b, self.drone_power_toggle_b):
             b.configure(state=st)
+        self._sync_usb_cam_checkbox_state()
+
+    def _sync_usb_cam_checkbox_state(self) -> None:
+        cam_on = bool(self._last_status.get("camera_streaming"))
+        if not self._controls_enabled or cam_on:
+            self.usb_cam_cb.configure(state="disabled")
+        else:
+            self.usb_cam_cb.configure(state="normal")
 
     def _toggle_on_color(self) -> tuple[str, str]:
         return "seagreen", "darkgreen"
@@ -305,6 +347,7 @@ class BoxRemotePanel:
         for btn, text, active in pairs:
             fg, hover = self._toggle_on_color() if active else self._toggle_off_color()
             btn.configure(text=text, fg_color=fg, hover_color=hover)
+        self._sync_usb_cam_checkbox_state()
 
     def _toggle_led(self) -> None:
         if self.client is None:
@@ -395,7 +438,7 @@ class BoxRemotePanel:
             return
         self._apply_status(d)
 
-    def _start_video_player(self) -> bool:
+    def _start_video_player(self, source: str = "mipi") -> bool:
         gst_bin = self._find_video_player()
         if not gst_bin:
             tk_messagebox.showinfo(
@@ -406,9 +449,10 @@ class BoxRemotePanel:
             )
             return False
         self._stop_video_player()
+        self._video_source = "usb" if source == "usb" else "mipi"
         try:
             self._video_proc = subprocess.Popen(
-                self._play_argv(gst_bin),
+                self._play_argv(gst_bin, self._video_source),
                 start_new_session=True,
             )
         except OSError as e:
@@ -420,6 +464,7 @@ class BoxRemotePanel:
     def _cam(self, streaming: bool) -> None:
         if self.client is None:
             return
+        source = self._selected_camera_source()
         if streaming:
             if not self._find_video_player():
                 tk_messagebox.showinfo(
@@ -431,7 +476,7 @@ class BoxRemotePanel:
                 return
         else:
             self._stop_video_player()
-        d = self.client.set_camera_streaming(streaming)
+        d = self.client.set_camera_streaming(streaming, source=source)
         if not d.get("ok"):
             tk_messagebox.showerror(
                 "Box",
@@ -443,6 +488,7 @@ class BoxRemotePanel:
             return
         self._apply_status(d)
         if streaming and bool(d.get("camera_streaming")):
-            self._start_video_player()
+            active = (d.get("camera_source") or source or "mipi").strip().lower()
+            self._start_video_player(active)
         elif not streaming:
             self._stop_video_player()

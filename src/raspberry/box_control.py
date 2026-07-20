@@ -380,9 +380,13 @@ class BoxController:
         if parts:
             _LOG.info("Sensors at startup — %s", " | ".join(parts))
 
-    def camera_stream_start(self, client_host: Optional[str] = None) -> bool:
-        """Start the Pi camera UDP stream to ``client_host`` (ground-station IP)."""
-        return self.camera_stream.start(client_host)
+    def camera_stream_start(
+        self,
+        client_host: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> bool:
+        """Start the Pi camera UDP stream to ``client_host`` (``mipi`` or ``usb``)."""
+        return self.camera_stream.start(client_host, source=source)
 
     def camera_stream_stop(self) -> None:
         """Stop the Pi camera stream subprocess."""

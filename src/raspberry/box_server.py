@@ -19,7 +19,8 @@ Routes (JSON):
 - ``GET /api/status`` — open (no token); ``hardware_ok``, live fields from :class:`raspberry.models.SystemStatus`.
 - ``POST /api/led`` — token required; body ``{"on": true|false}``.
 - ``POST /api/servo`` — token required; body ``{"active": true|false}`` (false detaches PWM).
-- ``POST /api/camera`` — token required; body ``{"streaming": true|false}`` (RTP/H264 UDP on port 5004).
+- ``POST /api/camera`` — token required; body ``{"streaming": true|false, "source": "mipi"|"usb"}``
+  (``source`` optional, default ``mipi``; USB uses RTP/JPEG on port 5004).
 - ``POST /api/drone-power`` — token required; body ``{"on": true|false}``.
 """
 
@@ -282,7 +283,15 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
                         self._fail(400, "missing streaming")
                         return
                     if bool(body["streaming"]):
-                        ok = box.camera_stream_start(_http_client_host(self))
+                        src = body.get("source", "mipi")
+                        if isinstance(src, str):
+                            src_l = src.strip().lower()
+                        else:
+                            src_l = "mipi"
+                        if src_l not in ("mipi", "usb"):
+                            self._fail(400, "source must be mipi or usb")
+                            return
+                        ok = box.camera_stream_start(_http_client_host(self), source=src_l)
                         if not ok:
                             err_cam = box.camera_stream.last_error or "camera start failed"
                             self._send_json(

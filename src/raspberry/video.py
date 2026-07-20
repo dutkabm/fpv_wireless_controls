@@ -1,24 +1,38 @@
 """
-Raspberry Pi camera video streaming (hardware H264 + GStreamer RTP).
+Raspberry Pi camera video streaming (GStreamer RTP/UDP on port 5004).
 
-Pi pipeline (rpicam-vid stdout → gst-launch RTP/UDP)::
+MIPI (default) — hardware H264 via rpicam-vid → gst-launch RTP/UDP::
 
     rpicam-vid -t 0 --width 1280 --height 720 --framerate 60 --inline --nopreview -o - \\
       | gst-launch-1.0 fdsrc ! h264parse ! rtph264pay config-interval=-1 \\
         ! udpsink host=<client> port=5004
 
-Mac viewer::
+USB — V4L2 MJPEG → RTP/JPEG::
 
+    gst-launch-1.0 v4l2src device=/dev/video2 \\
+      ! image/jpeg,width=1280,height=720,framerate=30/1 \\
+      ! rtpjpegpay ! udpsink host=<client> port=5004
+
+Mac viewers::
+
+    # MIPI / H264
     gst-launch-1.0 udpsrc port=5004 \\
       caps="application/x-rtp,payload=96,encoding-name=H264" \\
       ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert \\
       ! video/x-raw,format=UYVY ! osxvideosink sync=false
 
+    # USB / JPEG
+    gst-launch-1.0 udpsrc port=5004 \\
+      caps="application/x-rtp,encoding-name=JPEG,payload=26" \\
+      ! rtpjpegdepay ! jpegdec ! videoconvert ! osxvideosink sync=false
+
 Environment (optional):
 
 - ``BOX_CAMERA_WIDTH`` (default ``1280``), ``BOX_CAMERA_HEIGHT`` (default ``720``),
-  ``BOX_CAMERA_FRAMERATE`` (default ``60``), ``BOX_CAMERA_BITRATE``,
-  ``BOX_CAMERA_INDEX``, ``BOX_CAMERA_SKIP_PROBE``.
+  ``BOX_CAMERA_FRAMERATE`` (default ``60`` for MIPI), ``BOX_CAMERA_BITRATE``,
+  ``BOX_CAMERA_INDEX``, ``BOX_CAMERA_SKIP_PROBE``,
+  ``BOX_USB_CAMERA_DEVICE`` (default ``/dev/video2``),
+  ``BOX_USB_CAMERA_FRAMERATE`` (default ``30``).
 """
 
 from __future__ import annotations
@@ -30,10 +44,17 @@ import shutil
 import signal
 import subprocess
 import time
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
-# RTP/H264 UDP (Pi → connected HTTP client IP).
+# RTP UDP (Pi → connected HTTP client IP).
 STREAM_PORT = 5004
+
+CameraSource = Literal["mipi", "usb"]
+
+
+def normalize_camera_source(source: Optional[str]) -> CameraSource:
+    s = (source or "mipi").strip().lower()
+    return "usb" if s == "usb" else "mipi"
 
 
 def _which_camera_tool(*names: str) -> Optional[str]:
@@ -60,6 +81,8 @@ def _normalize_camera_error(raw: str) -> str:
         return "Camera stream failed (no details from rpicam-vid / gstreamer)."
     if "no cameras available" in low or "no camera available" in low:
         return "No camera detected by libcamera."
+    if "no such file or directory" in low and "video" in low:
+        return "USB camera device not found (check BOX_USB_CAMERA_DEVICE, default /dev/video2)."
     if "command not found" in low or "no such file" in low:
         if "gst-launch" in low:
             return "gst-launch-1.0 not found. Install GStreamer on the Pi."
@@ -68,21 +91,42 @@ def _normalize_camera_error(raw: str) -> str:
         return (
             "Stream socket error (udpsink).\n"
             "• Turn Video ON on the Pi, then start the GStreamer viewer on the Mac\n"
-            f"• Viewer: Box tab Play video (RTP/H264 UDP port {STREAM_PORT})\n"
+            f"• Viewer: Box tab Play video (RTP UDP port {STREAM_PORT})\n"
             "• If playback stops, toggle Video off/on on the Box tab"
         )
     return t[-1200:]
 
 
-def gstreamer_viewer_argv(port: Optional[int] = None, *, macos: bool = True) -> List[str]:
-    """Ground-station ``gst-launch-1.0`` viewer for the Pi RTP/H264 stream."""
+def gstreamer_viewer_argv(
+    port: Optional[int] = None,
+    *,
+    macos: bool = True,
+    source: Optional[str] = "mipi",
+) -> List[str]:
+    """Ground-station ``gst-launch-1.0`` viewer for the Pi RTP stream (H264 or JPEG)."""
     gst = _gst_launch_binary() or "gst-launch-1.0"
     p = port if port is not None else STREAM_PORT
-    sink = (
-        ["videoconvert", "!", "video/x-raw,format=UYVY", "!", "osxvideosink", "sync=false"]
-        if macos
-        else ["videoconvert", "!", "autovideosink", "sync=false"]
-    )
+    src = normalize_camera_source(source)
+    if macos:
+        sink = ["videoconvert", "!", "video/x-raw,format=UYVY", "!", "osxvideosink", "sync=false"]
+        if src == "usb":
+            # Match common USB JPEG viewer: videoconvert ! osxvideosink (no UYVY filter).
+            sink = ["videoconvert", "!", "osxvideosink", "sync=false"]
+    else:
+        sink = ["videoconvert", "!", "autovideosink", "sync=false"]
+    if src == "usb":
+        return [
+            gst,
+            "udpsrc",
+            f"port={p}",
+            'caps=application/x-rtp,encoding-name=JPEG,payload=26',
+            "!",
+            "rtpjpegdepay",
+            "!",
+            "jpegdec",
+            "!",
+            *sink,
+        ]
     return [
         gst,
         "udpsrc",
@@ -131,7 +175,7 @@ def probe_cameras(timeout: float = 5.0) -> Tuple[bool, str]:
     return True, ""
 
 
-def _camera_stream_argv(client_host: str) -> List[str]:
+def _mipi_camera_stream_argv(client_host: str) -> List[str]:
     """
     Shell pipeline: hardware H264 from ``rpicam-vid`` → GStreamer RTP/UDP to ``client_host``.
     """
@@ -187,6 +231,41 @@ def _camera_stream_argv(client_host: str) -> List[str]:
     return ["bash", "-o", "pipefail", "-c", pipeline]
 
 
+def _usb_camera_stream_argv(client_host: str) -> List[str]:
+    """V4L2 MJPEG → ``rtpjpegpay`` → UDP to ``client_host``."""
+    gst = _gst_launch_binary()
+    if gst is None:
+        raise FileNotFoundError("gst-launch-1.0 not found in PATH")
+    host = (client_host or "").strip()
+    if not host:
+        raise ValueError("no connected client IP for UDP stream")
+
+    device = os.environ.get("BOX_USB_CAMERA_DEVICE", "/dev/video2").strip() or "/dev/video2"
+    w = os.environ.get("BOX_CAMERA_WIDTH", "1280")
+    h = os.environ.get("BOX_CAMERA_HEIGHT", "720")
+    fps = os.environ.get("BOX_USB_CAMERA_FRAMERATE", "30")
+
+    return [
+        gst,
+        "v4l2src",
+        f"device={device}",
+        "!",
+        f"image/jpeg,width={w},height={h},framerate={fps}/1",
+        "!",
+        "rtpjpegpay",
+        "!",
+        "udpsink",
+        f"host={host}",
+        f"port={STREAM_PORT}",
+    ]
+
+
+def _camera_stream_argv(client_host: str, source: CameraSource = "mipi") -> List[str]:
+    if source == "usb":
+        return _usb_camera_stream_argv(client_host)
+    return _mipi_camera_stream_argv(client_host)
+
+
 def _drain_stderr(proc: subprocess.Popen) -> str:
     if proc.stderr is None:
         return ""
@@ -234,12 +313,14 @@ class CameraStream:
     """
     Run/stop a Raspberry Pi camera pipeline in a subprocess (no extra Python deps).
 
-    Default: hardware H264 → GStreamer RTP/UDP on port 5004.
+    Default: MIPI hardware H264 → GStreamer RTP/UDP on port 5004.
+    Alternate: USB V4L2 MJPEG → RTP/JPEG on the same port.
     """
 
     def __init__(self, argv: Optional[List[str]] = None):
         self._argv_override = argv
         self._client_host: Optional[str] = None
+        self._source: CameraSource = "mipi"
         self._proc: Optional[subprocess.Popen] = None
         self._last_error: Optional[str] = None
 
@@ -247,13 +328,21 @@ class CameraStream:
         """UDP destination (ground-station IP from the box HTTP client)."""
         self._client_host = (host or "").strip() or None
 
+    def set_source(self, source: Optional[str]) -> None:
+        """Select ``mipi`` (default) or ``usb`` camera pipeline."""
+        self._source = normalize_camera_source(source)
+
+    @property
+    def source(self) -> CameraSource:
+        return self._source
+
     def _argv(self) -> List[str]:
         if self._argv_override is not None:
             return self._argv_override
         host = self._client_host
         if not host:
             raise ValueError("no connected client IP for UDP stream")
-        return _camera_stream_argv(host)
+        return _camera_stream_argv(host, self._source)
 
     @property
     def last_error(self) -> Optional[str]:
@@ -278,8 +367,13 @@ class CameraStream:
         self._proc = None
         return False
 
-    def start(self, client_host: Optional[str] = None) -> bool:
+    def start(self, client_host: Optional[str] = None, source: Optional[str] = None) -> bool:
         """Spawn the streamer. Returns False if spawn fails or the process exits immediately."""
+        if source is not None:
+            new_src = normalize_camera_source(source)
+            if self.is_running and new_src != self._source:
+                self.stop()
+            self.set_source(new_src)
         if client_host:
             self.set_client_host(client_host)
         if self.is_running:
@@ -288,10 +382,11 @@ class CameraStream:
         if self._argv_override is None and not self._client_host:
             self._last_error = "No connected client IP (connect from the ground station first)."
             return False
-        ok_probe, probe_err = probe_cameras()
-        if not ok_probe:
-            self._last_error = probe_err
-            return False
+        if self._source == "mipi":
+            ok_probe, probe_err = probe_cameras()
+            if not ok_probe:
+                self._last_error = probe_err
+                return False
         try:
             argv = self._argv()
         except (OSError, ValueError, FileNotFoundError) as e:

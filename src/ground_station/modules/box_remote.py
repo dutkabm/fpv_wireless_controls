@@ -77,8 +77,11 @@ class BoxRemoteClient:
             payload["position"] = position
         return self._request("POST", API_SERVO, payload)
 
-    def set_camera_streaming(self, streaming: bool) -> Dict[str, Any]:
-        return self._request("POST", API_CAMERA, {"streaming": streaming})
+    def set_camera_streaming(self, streaming: bool, source: str = "mipi") -> Dict[str, Any]:
+        payload: dict = {"streaming": streaming}
+        if streaming:
+            payload["source"] = (source or "mipi").strip().lower() or "mipi"
+        return self._request("POST", API_CAMERA, payload)
 
     def set_drone_power(self, on: bool) -> Dict[str, Any]:
         return self._request("POST", API_DRONE_POWER, {"on": on})

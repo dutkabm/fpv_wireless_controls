@@ -44,6 +44,7 @@ class SystemStatus:
     servo_position: Optional[float] = None
     drone_power_on: bool = False
     camera_streaming: bool = False
+    camera_source: str = "mipi"
     camera_stream_error: Optional[str] = None
     env_error: Optional[str] = None
     battery_error: Optional[str] = None
@@ -80,9 +81,11 @@ class SystemStatus:
         cs = getattr(box, "camera_stream", None)
         if cs is not None:
             self.camera_streaming = cs.is_running
+            self.camera_source = getattr(cs, "source", None) or "mipi"
             self.camera_stream_error = cs.last_error
         else:
             self.camera_streaming = False
+            self.camera_source = "mipi"
             self.camera_stream_error = None
 
     @classmethod
