@@ -7,10 +7,16 @@ MIPI (default) — hardware H264 via rpicam-vid → gst-launch RTP/UDP::
       | gst-launch-1.0 fdsrc ! h264parse ! rtph264pay config-interval=-1 \\
         ! udpsink host=<client> port=5004
 
-USB — V4L2 MJPEG → RTP/JPEG::
+USB — auto-detect UVC (e.g. ``USB2 Video (...usb-...)``), prefer MJPEG::
 
-    gst-launch-1.0 v4l2src device=/dev/video2 \\
+    gst-launch-1.0 v4l2src device=/dev/video0 \\
       ! image/jpeg,width=1280,height=720,framerate=30/1 \\
+      ! rtpjpegpay ! udpsink host=<client> port=5004
+
+    # Fallback when the node has no MJPEG (raw YUY2 → software JPEG)::
+    gst-launch-1.0 v4l2src device=/dev/video0 \\
+      ! video/x-raw,format=YUY2,width=1280,height=720,framerate=30/1 \\
+      ! videoconvert ! jpegenc \\
       ! rtpjpegpay ! udpsink host=<client> port=5004
 
 Mac viewers::
@@ -28,15 +34,14 @@ Mac viewers::
 
 Environment (optional):
 
-- ``BOX_CAMERA_WIDTH`` (default ``1280``), ``BOX_CAMERA_HEIGHT`` (default ``720``),
-  ``BOX_CAMERA_FRAMERATE`` (default ``60`` for MIPI), ``BOX_CAMERA_BITRATE``,
-  ``BOX_CAMERA_INDEX``, ``BOX_CAMERA_SKIP_PROBE``,
-  ``BOX_USB_CAMERA_DEVICE`` (default ``/dev/video2``),
-  ``BOX_USB_CAMERA_FRAMERATE`` (default ``30``).
+- ``BOX_CAMERA_WIDTH`` / ``BOX_CAMERA_HEIGHT`` / ``BOX_CAMERA_FRAMERATE`` / ``BOX_CAMERA_BITRATE`` /
+  ``BOX_CAMERA_INDEX`` / ``BOX_CAMERA_SKIP_PROBE`` (MIPI; see module constants for USB defaults).
 """
 
 from __future__ import annotations
 
+import glob
+import logging
 import os
 import re
 import shlex
@@ -50,6 +55,23 @@ from typing import List, Literal, Optional, Tuple
 STREAM_PORT = 5004
 
 CameraSource = Literal["mipi", "usb"]
+UsbPixelFormat = Literal["mjpeg", "yuy2"]
+
+# USB UVC — match ``v4l2-ctl --list-devices`` card name substring, e.g.
+# ``USB2 Video: USB2 Video (usb-fe9c0000.xhci-1.3)``. Empty device → auto-pick first match.
+USB_CAMERA_NAME = "USB2 Video"
+USB_CAMERA_DEVICE = ""  # e.g. "/dev/video0" to pin; "" = detect via USB_CAMERA_NAME
+USB_CAMERA_FORMAT: Optional[UsbPixelFormat] = "mjpeg"  # None = probe v4l2 formats
+USB_CAMERA_WIDTH = 1280
+USB_CAMERA_HEIGHT = 720
+USB_CAMERA_FRAMERATE = 30
+USB_CAMERA_JPEG_QUALITY = 85  # raw→jpegenc path only
+
+_LOG = logging.getLogger(__name__)
+
+# v4l2-ctl --list-devices header for a USB UVC cam, e.g.
+# "USB2 Video: USB2 Video (usb-fe9c0000.xhci-1.3):"
+_USB_LIST_DEVICES_RE = re.compile(r"\(usb-[^)]+\)\s*:", re.IGNORECASE)
 
 
 def normalize_camera_source(source: Optional[str]) -> CameraSource:
@@ -74,6 +96,10 @@ def _gst_launch_binary() -> Optional[str]:
     return _which_camera_tool("gst-launch-1.0")
 
 
+def _v4l2_ctl_binary() -> Optional[str]:
+    return _which_camera_tool("v4l2-ctl")
+
+
 def _normalize_camera_error(raw: str) -> str:
     t = (raw or "").strip()
     low = t.lower()
@@ -81,8 +107,19 @@ def _normalize_camera_error(raw: str) -> str:
         return "Camera stream failed (no details from rpicam-vid / gstreamer)."
     if "no cameras available" in low or "no camera available" in low:
         return "No camera detected by libcamera."
+    if "no usb camera" in low:
+        return t
     if "no such file or directory" in low and "video" in low:
-        return "USB camera device not found (check BOX_USB_CAMERA_DEVICE, default /dev/video2)."
+        return (
+            "USB camera device not found "
+            f"(expected name containing {USB_CAMERA_NAME!r}; see v4l2-ctl --list-devices)."
+        )
+    if "not-negotiated" in low:
+        return (
+            "USB camera caps not negotiated.\n"
+            f"• Check {USB_CAMERA_WIDTH}x{USB_CAMERA_HEIGHT}@{USB_CAMERA_FRAMERATE} / format={USB_CAMERA_FORMAT}\n"
+            "• List modes: v4l2-ctl -d /dev/video0 --list-formats-ext"
+        )
     if "command not found" in low or "no such file" in low:
         if "gst-launch" in low:
             return "gst-launch-1.0 not found. Install GStreamer on the Pi."
@@ -95,6 +132,156 @@ def _normalize_camera_error(raw: str) -> str:
             "• If playback stops, toggle Video off/on on the Box tab"
         )
     return t[-1200:]
+
+
+def _parse_v4l2_list_devices(text: str) -> List[Tuple[str, List[str]]]:
+    """Parse ``v4l2-ctl --list-devices`` into ``[(card_name, [/dev/videoN, ...]), ...]``."""
+    groups: List[Tuple[str, List[str]]] = []
+    name: Optional[str] = None
+    nodes: List[str] = []
+    for raw_line in (text or "").splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            continue
+        if not line.startswith(("\t", " ")) and line.endswith(":"):
+            if name is not None:
+                groups.append((name, nodes))
+            name = line[:-1].strip()
+            nodes = []
+            continue
+        m = re.search(r"(/dev/video\d+)", line)
+        if m and name is not None:
+            nodes.append(m.group(1))
+    if name is not None:
+        groups.append((name, nodes))
+    return groups
+
+
+def _is_usb_v4l_card(name: str) -> bool:
+    """True for UVC-style cards, e.g. ``USB2 Video: USB2 Video (usb-fe9c0000.xhci-1.3)``."""
+    return bool(_USB_LIST_DEVICES_RE.search(name)) or "usb-" in name.lower()
+
+
+def _sysfs_usb_video_nodes() -> List[Tuple[str, str]]:
+    """Fallback: ``[(/dev/videoN, name), ...]`` whose sysfs path is under a USB device."""
+    found: List[Tuple[str, str]] = []
+    for sys_path in sorted(glob.glob("/sys/class/video4linux/video*")):
+        base = os.path.basename(sys_path)
+        dev = f"/dev/{base}"
+        try:
+            real = os.path.realpath(sys_path)
+        except OSError:
+            continue
+        if "/usb" not in real.lower():
+            continue
+        card = base
+        try:
+            with open(os.path.join(sys_path, "name"), encoding="utf-8", errors="replace") as f:
+                card = f.read().strip() or base
+        except OSError:
+            pass
+        found.append((dev, card))
+    return found
+
+
+def list_usb_v4l_devices() -> List[Tuple[str, str]]:
+    """
+    USB capture candidates as ``[(device, card_name), ...]``.
+
+    Prefers the first ``/dev/video*`` under each ``v4l2-ctl --list-devices`` USB card
+    (capture node; later nodes are often metadata).
+    """
+    ctl = _v4l2_ctl_binary()
+    if ctl:
+        try:
+            r = subprocess.run(
+                [ctl, "--list-devices"],
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+            )
+            out = f"{r.stdout or ''}\n{r.stderr or ''}"
+            candidates: List[Tuple[str, str]] = []
+            for card, nodes in _parse_v4l2_list_devices(out):
+                if not _is_usb_v4l_card(card) or not nodes:
+                    continue
+                candidates.append((nodes[0], card))
+            if candidates:
+                return candidates
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return _sysfs_usb_video_nodes()
+
+
+def _v4l2_formats_text(device: str, timeout: float = 5.0) -> str:
+    ctl = _v4l2_ctl_binary()
+    if ctl is None:
+        return ""
+    try:
+        r = subprocess.run(
+            [ctl, "-d", device, "--list-formats-ext"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return f"{r.stdout or ''}\n{r.stderr or ''}"
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _detect_usb_pixel_format(device: str) -> UsbPixelFormat:
+    """Use ``USB_CAMERA_FORMAT`` when set; else prefer MJPEG from v4l2, else YUY2."""
+    if USB_CAMERA_FORMAT in ("mjpeg", "yuy2"):
+        return USB_CAMERA_FORMAT
+    text = _v4l2_formats_text(device)
+    low = text.lower()
+    if "mjpg" in low or "motion-jpeg" in low or "'jpeg'" in low:
+        return "mjpeg"
+    if "yuyv" in low or "yuy2" in low:
+        return "yuy2"
+    return "mjpeg"
+
+
+def resolve_usb_camera_device() -> Tuple[str, str]:
+    """
+    Resolve ``(/dev/videoN, card_name)`` for USB streaming.
+
+    Uses ``USB_CAMERA_DEVICE`` when set; otherwise picks the first USB UVC node whose
+    card name contains ``USB_CAMERA_NAME`` (e.g. ``USB2 Video``).
+    """
+    pinned = (USB_CAMERA_DEVICE or "").strip()
+    if pinned:
+        if not os.path.exists(pinned):
+            raise FileNotFoundError(f"USB camera device not found: {pinned}")
+        return pinned, pinned
+
+    name_filter = (USB_CAMERA_NAME or "").strip().lower()
+    cams = list_usb_v4l_devices()
+    if name_filter:
+        cams = [(d, n) for d, n in cams if name_filter in n.lower()]
+    if not cams:
+        hint = (
+            f" matching USB_CAMERA_NAME={USB_CAMERA_NAME!r}"
+            if name_filter
+            else " (expected a card like 'USB2 Video: USB2 Video (usb-...)')"
+        )
+        raise FileNotFoundError(f"No USB camera detected{hint}")
+    device, card = cams[0]
+    if not os.path.exists(device):
+        raise FileNotFoundError(f"USB camera device not found: {device} ({card})")
+    return device, card
+
+
+def probe_usb_camera(timeout: float = 5.0) -> Tuple[bool, str]:
+    """Return (True, "") if a USB V4L camera is usable, else (False, message)."""
+    del timeout  # reserved for parity with probe_cameras
+    if os.environ.get("BOX_CAMERA_SKIP_PROBE", "").strip() in ("1", "true", "yes"):
+        return True, ""
+    try:
+        resolve_usb_camera_device()
+        return True, ""
+    except FileNotFoundError as e:
+        return False, str(e)
 
 
 def gstreamer_viewer_argv(
@@ -232,7 +419,7 @@ def _mipi_camera_stream_argv(client_host: str) -> List[str]:
 
 
 def _usb_camera_stream_argv(client_host: str) -> List[str]:
-    """V4L2 MJPEG → ``rtpjpegpay`` → UDP to ``client_host``."""
+    """USB V4L2 → RTP/JPEG UDP (MJPEG hardware or YUY2 + jpegenc)."""
     gst = _gst_launch_binary()
     if gst is None:
         raise FileNotFoundError("gst-launch-1.0 not found in PATH")
@@ -240,17 +427,40 @@ def _usb_camera_stream_argv(client_host: str) -> List[str]:
     if not host:
         raise ValueError("no connected client IP for UDP stream")
 
-    device = os.environ.get("BOX_USB_CAMERA_DEVICE", "/dev/video2").strip() or "/dev/video2"
-    w = os.environ.get("BOX_CAMERA_WIDTH", "1280")
-    h = os.environ.get("BOX_CAMERA_HEIGHT", "720")
-    fps = os.environ.get("BOX_USB_CAMERA_FRAMERATE", "30")
+    device, card = resolve_usb_camera_device()
+    pix = _detect_usb_pixel_format(device)
+    w = str(USB_CAMERA_WIDTH)
+    h = str(USB_CAMERA_HEIGHT)
+    fps = str(USB_CAMERA_FRAMERATE)
+    _LOG.info("USB camera %s (%s) format=%s %sx%s@%s", device, card, pix, w, h, fps)
 
+    if pix == "mjpeg":
+        return [
+            gst,
+            "v4l2src",
+            f"device={device}",
+            "!",
+            f"image/jpeg,width={w},height={h},framerate={fps}/1",
+            "!",
+            "rtpjpegpay",
+            "!",
+            "udpsink",
+            f"host={host}",
+            f"port={STREAM_PORT}",
+        ]
+
+    quality = str(USB_CAMERA_JPEG_QUALITY)
     return [
         gst,
         "v4l2src",
         f"device={device}",
         "!",
-        f"image/jpeg,width={w},height={h},framerate={fps}/1",
+        f"video/x-raw,format=YUY2,width={w},height={h},framerate={fps}/1",
+        "!",
+        "videoconvert",
+        "!",
+        "jpegenc",
+        f"quality={quality}",
         "!",
         "rtpjpegpay",
         "!",
@@ -314,7 +524,7 @@ class CameraStream:
     Run/stop a Raspberry Pi camera pipeline in a subprocess (no extra Python deps).
 
     Default: MIPI hardware H264 → GStreamer RTP/UDP on port 5004.
-    Alternate: USB V4L2 MJPEG → RTP/JPEG on the same port.
+    Alternate: auto-detect USB UVC → MJPEG (or YUY2+jpegenc) → RTP/JPEG.
     """
 
     def __init__(self, argv: Optional[List[str]] = None):
@@ -384,6 +594,11 @@ class CameraStream:
             return False
         if self._source == "mipi":
             ok_probe, probe_err = probe_cameras()
+            if not ok_probe:
+                self._last_error = probe_err
+                return False
+        elif self._source == "usb":
+            ok_probe, probe_err = probe_usb_camera()
             if not ok_probe:
                 self._last_error = probe_err
                 return False
