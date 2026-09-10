@@ -1,4 +1,4 @@
-"""Box enclosure remote panel (``raspberry.box_server``) for embedding in the joystick client."""
+"""Box enclosure remote panel (``drone_control.box_server``) for embedding in the joystick client."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ class BoxRemotePanel:
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(0, weight=1)
 
-        scroll = ctk.CTkScrollableFrame(parent, label_text="Box enclosure (raspberry.box_server)")
+        scroll = ctk.CTkScrollableFrame(parent, label_text="Box enclosure (drone_control.box_server)")
         scroll.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
         scroll.grid_columnconfigure(0, weight=1)
         panel = scroll

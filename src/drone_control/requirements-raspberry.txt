@@ -1,6 +1,7 @@
-# Pi: main (TX bridge), box_control, box_server, video
-# Run: PYTHONPATH=src python3 -m raspberry.main  |  PYTHONPATH=src python3 -m raspberry.box_server
-pyserial>=3.5
+# Raspberry Pi OS: main (TX bridge), box_control, box_server, video
+# Run: PYTHONPATH=src python3 -m drone_control.main  |  PYTHONPATH=src python3 -m drone_control.box_server
+# Generic Linux / OpenIPC: use requirements-linux.txt instead (no RPi.GPIO).
+-r requirements-linux.txt
 # Blinka imports RPi.GPIO on Pi when opening I2C via `import board`
 RPi.GPIO>=0.7.1
 adafruit-blinka>=8.20.0

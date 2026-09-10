@@ -1,5 +1,5 @@
 # CLAUDE.md
 
-`src/operator/` shadows Python's stdlib `operator` module — on the PC run the client as a script (`python src/operator/main.py`), not with `PYTHONPATH=src` set globally.
+On the PC run the ground station as a script (`python src/ground_station/main.py`), not with `PYTHONPATH=src` set globally.
 
-Pi bridge and standalone `box_server` both bind port 50502 — don't run both simultaneously on the Pi.
+The SBC package is `drone_control` (Raspberry Pi or Luckfox / OpenIPC). The TX bridge and standalone `box_server` both bind port 50502 — don't run both simultaneously.

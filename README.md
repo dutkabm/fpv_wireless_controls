@@ -30,7 +30,7 @@ The primary goal is an easily implementable way to wirelessly transmit any input
 
 # Implementation
 
-The stack uses Python on a gamepad host and on a Raspberry Pi near the transmitter. The **network path** (current `src/` tree) sends RC channels from the PC over UDP to the Pi, which forwards CRSF to the TX over USB serial. The transmitter wirelessly sends data to the Drone Control Receiver (RX), which outputs CRSF to a Raspberry Pi Pico.
+The stack uses Python on a gamepad host and on a Raspberry Pi or Luckfox Pico Pro/Max (OpenIPC) near the transmitter. The **network path** (current `src/` tree) sends RC channels from the PC over UDP to the board, which forwards CRSF to the TX over USB serial or SoC UART. The transmitter wirelessly sends data to the Drone Control Receiver (RX), which outputs CRSF to a Raspberry Pi Pico.
 The Pico runs a C++ program which interprets the data, outputting either an emulated Joystick signals to the final output device.
 
 ## Requirements
@@ -71,7 +71,7 @@ The input processor device requires most of the software, including device drive
 
 - `Python 3.10` or higher (3.11+ recommended)
   - **Ground station** (`src/ground_station/`): `customtkinter`, `pygame` — see `src/ground_station/requirements.txt`
-  - **Pi bridge / box** (`src/raspberry/`): `pyserial`, GPIO/sensor packages — see `src/raspberry/requirements.txt`
+  - **SBC drone control / box** (`src/drone_control/`): `pyserial` on Linux (`requirements-linux.txt`); plus GPIO/sensor packages on Raspberry Pi (`requirements-raspberry.txt`)
   - Main project development was done in Python 3.11–3.12; other versions may work but are untested.
 - Depending on connection to TX (explained later), these drivers are necesary:
   - [STM32 Virtual COM Port Driver](https://www.st.com/en/development-tools/stsw-stm32102.html). For connecting to TX over USB.
@@ -136,15 +136,15 @@ The second section of wiring is for the Raspberry Pi Pico device and the RX chip
 
 ## TX Side
 
-The Python transmission stack is split across a **PC/laptop client** and a **Raspberry Pi bridge**. The client reads a local gamepad, sends 16 RC channels over the network, and can control an enclosure “box” over HTTP. The Pi receives those channels, forwards CRSF to the ELRS/Crossfire TX over USB serial, and runs the box HTTP API in the same process as the bridge. Application code lives under `src/` (`common/`, `ground_station/`, `raspberry/`).
+The Python transmission stack is split across a **PC/laptop client** and a **SBC bridge** (Raspberry Pi, or Luckfox Pico Pro/Max on OpenIPC). The client reads a local gamepad, sends 16 RC channels over the network, and can control an enclosure “box” over HTTP. The board receives those channels, forwards CRSF to the ELRS/Crossfire TX over USB serial or SoC UART, and runs the box HTTP API in the same process as the bridge. Application code lives under `src/` (`common/`, `ground_station/`, `drone_control/`).
 
 ### Imports and `PYTHONPATH`
 
-Modules import as `common.*`, `modules.*` (under `ground_station/`), and `raspberry.*`. The Pi sets `PYTHONPATH=src` from the repo root. On the PC, run the client as a script (below); `src/ground_station/main.py` adds its own directory and `src/` to `sys.path` at startup, so no `PYTHONPATH` is needed.
+Modules import as `common.*`, `modules.*` (under `ground_station/`), and `drone_control.*`. The SBC sets `PYTHONPATH=src` from the repo root. On the PC, run the client as a script (below); `src/ground_station/main.py` adds its own directory and `src/` to `sys.path` at startup, so no `PYTHONPATH` is needed.
 
 ### Ground station client (`src/ground_station/main.py`)
 
-CustomTkinter UI: map a gamepad to 16 RC channels (`src/ground_station/controller_map.txt`), TCP-connect to the Pi bridge on **Connect**, UDP-send channel frames at the configured rate. **Box** tab: status, LED, servo, drone power, camera stream (via `raspberry.box_server` on the Pi).
+CustomTkinter UI: map a gamepad to 16 RC channels (`src/ground_station/controller_map.txt`), TCP-connect to the SBC bridge on **Connect**, UDP-send channel frames at the configured rate. **Box** tab: status, LED, servo, drone power, camera stream (via `drone_control.box_server` on the board).
 
 ```bash
 cd fpv-wireless-controls
@@ -156,11 +156,11 @@ python src/ground_station/main.py
 
 Dependencies: `customtkinter`, `pygame` (see `src/ground_station/requirements.txt`).
 
-### Pi TX bridge (`src/raspberry/main.py`)
+### TX bridge (`src/drone_control/main.py`)
 
-Receives UDP channel packets from the client and forwards CRSF to the transmitter over USB serial. Starts `raspberry.box_server` in a background thread and passes the same bearer token in the TCP handshake (`OK <name> <token>`).
+Receives UDP channel packets from the client and forwards CRSF to the transmitter over USB serial. Starts `drone_control.box_server` in a background thread and passes the same bearer token in the TCP handshake (`OK <name> <token>`).
 
-Serial / CRSF output mode defaults come from `src/ground_station/controller_map.txt` on the Pi if present (`--config`); that file is read as data only, not imported as Python. Baud is fixed in code: **420000** for `uart` (Pi→FC CRSF), **400000** for `tx` (USB TX module).
+Serial / CRSF output mode defaults come from `src/ground_station/controller_map.txt` on the board if present (`--config`); that file is read as data only, not imported as Python. Baud is fixed in code: **420000** for `uart` (SBC→FC CRSF), **400000** for `tx` (USB TX module).
 
 Raspberry Pi OS (Bookworm+) blocks system-wide `pip install` (PEP 668). Use a venv:
 
@@ -169,22 +169,49 @@ cd ~/Documents/fpv-wireless-controls
 sudo apt install -y python3-venv python3-full   # once, if needed
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r src/raspberry/requirements.txt
+pip install -r src/drone_control/requirements-raspberry.txt
 
-export PYTHONPATH=src    # Pi only; safe for raspberry.*
-python -m raspberry.main
+export PYTHONPATH=src    # SBC only; safe for drone_control.*
+python -m drone_control.main
 ```
 
 Do not run a separate `box_server` while the bridge is running (both use port `50502` by default).
 
-Optional standalone box API (debug or box-only Pi):
+Optional standalone box API (debug or box-only board):
 
 ```bash
 source .venv/bin/activate
-PYTHONPATH=src python -m raspberry.box_server
+PYTHONPATH=src python -m drone_control.box_server
 ```
 
-Pi dependencies: `pyserial`, GPIO/sensor stack in `src/raspberry/requirements.txt` (intended for Raspberry Pi OS).
+Raspberry Pi dependencies: `pyserial` plus GPIO/sensor stack in `src/drone_control/requirements-raspberry.txt`. Generic Linux / OpenIPC: `src/drone_control/requirements-linux.txt`.
+
+### Luckfox Pico Pro/Max (OpenIPC)
+
+Same `python -m drone_control.main` bridge on a Rockchip RV1106 Luckfox Pico Pro or Max running **OpenIPC**. The board is autodetected (`/etc/majestic.yaml`, device-tree model); override with `BOX_BOARD=luckfox` if needed.
+
+**MIPI camera:** Majestic already owns the CSI sensor. Do not use `rpicam-vid` or stock `rkipc`. Box **Video** on/off sets Majestic `outgoing.server` to `udp://<ground-station>:5004` (RTP H264, same viewer as Pi MIPI). Keep Majestic running. Optional: `BOX_MAJESTIC_URL` (default `http://127.0.0.1`).
+
+**UART (CRSF to FC):** default `/dev/ttyS3` (UART3_M1). Override with `uart_port` in `controller_map.txt` if needed. Enable UART3 in OpenIPC pinmux; do not use UART2 (debug console).
+
+**GPIO / PWM** (Linux numbers, Pico-style header — not Pi BCM):
+
+| Function | Default | Notes |
+| --- | --- | --- |
+| LED | GPIO 55 (GPIO1_C7, header pin 4) | sysfs |
+| Servo | PWM10 (`/sys/class/pwm/pwmchip10`) on GPIO1_C6 | enable PWM10_M1 |
+| Drone power | GPIO 52 (GPIO1_C4) | sysfs |
+| I2C | `/dev/i2c-3` | I2C3_M1; Adafruit sensor packages are optional |
+
+Overrides: `BOX_LED_PIN`, `BOX_SERVO_PIN`, `BOX_DRONE_POWER_PIN`, `BOX_SERVO_PWMCHIP`, `BOX_I2C_BUS`.
+
+OpenIPC images often omit Python. If `python3` is present (or you add it), install the Linux file — **not** `requirements-raspberry.txt` (RPi.GPIO / lgpio will fail):
+
+```bash
+pip3 install -r src/drone_control/requirements-linux.txt
+export PYTHONPATH=src
+python3 -m drone_control.main
+```
 
 ### Protocol modules (shared)
 

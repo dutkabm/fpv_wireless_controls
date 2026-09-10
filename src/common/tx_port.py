@@ -192,13 +192,13 @@ def resolve_crsf_serial_port(
     Resolve the serial device for CRSF output.
 
     ``mode=tx`` — USB-UART TX module autodetection (existing behavior).
-    ``mode=uart`` — Pi primary UART (default ``/dev/serial0``, with fallbacks).
+    ``mode=uart`` — SoC UART (Pi ``/dev/serial0``, Luckfox ``/dev/ttyS3``, with fallbacks).
     """
     mode_l = (mode or "tx").strip().lower()
     if mode_l in ("uart", "direct", "fc", "drone", "ttyama"):
-        # Import locally to keep tx_port usable without the raspberry package.
+        # Import locally to keep tx_port usable without the drone_control package.
         try:
-            from raspberry.crsf_output import pick_uart_device
+            from drone_control.crsf_output import pick_uart_device
         except ImportError:
             from crsf_output import pick_uart_device  # type: ignore
 

@@ -1,9 +1,11 @@
 """
-CRSF serial output mode for the Pi bridge (chosen at process start).
+CRSF serial output mode for the TX bridge (chosen at process start).
 
 ``tx`` — USB-UART to an ELRS/Crossfire TX module (wireless), baud ``CRSF_BAUD_TX``.
-``uart`` — Pi SoC UART emulates an ELRS RX wired to the flight controller
+``uart`` — SoC UART emulates an ELRS RX wired to the flight controller
 (CRSF RC out + telemetry in), baud ``CRSF_BAUD_UART``.
+
+UART device defaults follow the board profile (Pi ``/dev/serial0``, Luckfox ``/dev/ttyS3``).
 """
 
 from __future__ import annotations
@@ -11,36 +13,26 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+try:
+    from .sbc import get_board_profile
+except ImportError:
+    from sbc import get_board_profile  # type: ignore
+
 CRSF_OUTPUT_TX = "tx"
 CRSF_OUTPUT_UART = "uart"
 CRSF_OUTPUT_MODES = (CRSF_OUTPUT_TX, CRSF_OUTPUT_UART)
 
 # Fixed CRSF serial baud by output mode (not configurable via controller_map.txt).
-CRSF_BAUD_UART = 420000  # Pi-as-RX ↔ FC (Betaflight/ELRS CRSF)
+CRSF_BAUD_UART = 420000  # board-as-RX ↔ FC (Betaflight/ELRS CRSF)
 CRSF_BAUD_TX = 400000  # USB ELRS / Crossfire TX module
 
-# Raspberry Pi primary UART (GPIO 14/15). Prefer the stable symlink; it points at
-# ttyAMA0 / ttyS0 / ttyAMA10 depending on model and config.
-DEFAULT_UART_PORT = "/dev/serial0"
 
-# Tried in order when the preferred node is missing (ENOENT).
-UART_PORT_CANDIDATES = (
-    "/dev/serial0",
-    "/dev/ttyAMA0",
-    "/dev/ttyS0",
-    "/dev/ttyAMA10",
-)
+def _profile():
+    return get_board_profile()
 
-_UART_PORT_ALIASES = {
-    "uart0": DEFAULT_UART_PORT,
-    "uart": DEFAULT_UART_PORT,
-    "primary": DEFAULT_UART_PORT,
-    "serial0": "/dev/serial0",
-    "ttyama0": "/dev/ttyAMA0",
-    "ama0": "/dev/ttyAMA0",
-    "ttys0": "/dev/ttyS0",
-    "ttyama10": "/dev/ttyAMA10",
-}
+
+DEFAULT_UART_PORT = _profile().uart_port
+UART_PORT_CANDIDATES = _profile().uart_candidates
 
 
 def normalize_crsf_output_mode(value: Optional[str], *, default: str = CRSF_OUTPUT_UART) -> str:
@@ -71,14 +63,17 @@ def baud_for_crsf_output(mode: str) -> int:
     return CRSF_BAUD_UART
 
 
-def resolve_uart_port(value: Optional[str], *, default: str = DEFAULT_UART_PORT) -> str:
-    """Map config/CLI UART names (e.g. ``uart0``) to a device path preference."""
+def resolve_uart_port(value: Optional[str], *, default: Optional[str] = None) -> str:
+    """Map config/CLI UART names (e.g. ``uart0``, ``uart3``) to a device path preference."""
+    prof = _profile()
+    aliases = dict(prof.uart_aliases)
+    fallback = default if default else prof.uart_port
     s = (value or "").strip()
     if not s:
-        return default
+        return fallback
     key = s.lower()
-    if key in _UART_PORT_ALIASES:
-        return _UART_PORT_ALIASES[key]
+    if key in aliases:
+        return aliases[key]
     if key.startswith("tty") and "/" not in s:
         return f"/dev/{s}"
     return s
@@ -88,12 +83,13 @@ def pick_uart_device(preferred: Optional[str] = None) -> Optional[str]:
     """
     Return the first existing UART device path.
 
-    Tries ``preferred`` first, then :data:`UART_PORT_CANDIDATES`.
+    Tries ``preferred`` first, then the board UART candidates (Pi serial0 / Luckfox ttyS3).
     """
+    prof = _profile()
     seen: set[str] = set()
     ordered: list[str] = []
-    pref = resolve_uart_port(preferred, default=DEFAULT_UART_PORT)
-    for path in (pref, *UART_PORT_CANDIDATES):
+    pref = resolve_uart_port(preferred, default=prof.uart_port)
+    for path in (pref, *prof.uart_candidates):
         if path in seen:
             continue
         seen.add(path)

@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-HTTP JSON API for :class:`raspberry.box_control.BoxController` (LAN remote; used from ``ground_station.main`` Box tab).
+HTTP JSON API for :class:`drone_control.box_control.BoxController` (LAN remote; used from ``ground_station.main`` Box tab).
 
-From the repo root on the Pi::
+From the repo root on the SBC::
 
-    PYTHONPATH=src python3 -m raspberry.box_server
+    PYTHONPATH=src python3 -m drone_control.box_server
 
 Environment:
 
 - ``BOX_HTTP_BIND`` — listen address (default ``0.0.0.0``).
 - ``BOX_HTTP_PORT`` — port (default ``50502``).
 
-Bearer token for POST routes lives in process memory (``set_http_token``). ``raspberry.main``
+Bearer token for POST routes lives in process memory (``set_http_token``). ``drone_control.main``
 generates one token, starts this server in a thread, and sends the same token in the TCP joystick handshake.
 
 Routes (JSON):
 
-- ``GET /api/status`` — open (no token); ``hardware_ok``, live fields from :class:`raspberry.models.SystemStatus`.
+- ``GET /api/status`` — open (no token); ``hardware_ok``, live fields from :class:`drone_control.models.SystemStatus`.
 - ``POST /api/led`` — token required; body ``{"on": true|false}``.
 - ``POST /api/servo`` — token required; body ``{"active": true|false}`` (false detaches PWM).
 - ``POST /api/camera`` — token required; body ``{"streaming": true|false, "source": "mipi"|"usb"}``
@@ -108,7 +108,7 @@ _http_token: str = ""
 
 
 def set_http_token(token: str) -> None:
-    """Set bearer token for POST routes (called by ``raspberry.main`` before ``main()``)."""
+    """Set bearer token for POST routes (called by ``drone_control.main`` before ``main()``)."""
     global _http_token
     _http_token = (token or "").strip()
 
@@ -170,7 +170,7 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
 
     def _crsf_fields(self) -> dict:
         try:
-            from raspberry import crsf_bridge_state
+            from drone_control import crsf_bridge_state
 
             return crsf_bridge_state.snapshot()
         except Exception:
@@ -343,6 +343,13 @@ def main() -> None:
         signal.signal(signal.SIGINT, _shutdown)
         signal.signal(signal.SIGTERM, _shutdown)
     _LOG.info("Box HTTP API on http://%s:%s/ (GET %s)", bind, port, API_STATUS)
+    try:
+        from drone_control.sbc import get_board_profile
+
+        p = get_board_profile()
+        _LOG.info("Board: %s camera=%s UART=%s", p.display_name, p.camera_backend, p.uart_port)
+    except Exception:
+        pass
     STATE.init_at_startup()
     try:
         server.serve_forever()

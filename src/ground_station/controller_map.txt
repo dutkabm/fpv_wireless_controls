@@ -1,8 +1,6 @@
 [General]
 joystick_index = 0
 crsf_output = uart
-uart_port = serial0
-# serial_port = AUTO   # TX-module USB preference when crsf_output=tx
 
 [AxisMappings]
 axis_0 = channel:1, invert:false

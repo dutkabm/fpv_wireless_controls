@@ -1,13 +1,18 @@
 """
-Raspberry Pi camera video streaming (GStreamer RTP/UDP on port 5004).
+Board camera streaming (GStreamer RTP/UDP on port 5004).
 
-MIPI (default) — hardware H264 via rpicam-vid → gst-launch RTP/UDP::
+MIPI on Raspberry Pi — hardware H264 via rpicam-vid → gst-launch RTP/UDP::
 
     rpicam-vid -t 0 --width 1280 --height 720 --framerate 60 --inline --nopreview -o - \\
       | gst-launch-1.0 fdsrc ! h264parse ! rtph264pay config-interval=-1 \\
         ! udpsink host=<client> port=5004
 
+MIPI on Luckfox Pico Pro/Max (OpenIPC) — Majestic already owns the CSI sensor.
+Video ON sets Majestic ``outgoing.server`` to ``udp://<client>:5004`` (RTP H264).
+Do not run rpicam-vid / rkipc alongside Majestic.
+
 USB — auto-detect UVC (e.g. ``USB2 Video (...usb-...)``), prefer MJPEG::
+
 
     gst-launch-1.0 v4l2src device=/dev/video0 \\
       ! image/jpeg,width=1280,height=720,framerate=30/1 \\
@@ -35,7 +40,9 @@ Mac viewers::
 Environment (optional):
 
 - ``BOX_CAMERA_WIDTH`` / ``BOX_CAMERA_HEIGHT`` / ``BOX_CAMERA_FRAMERATE`` / ``BOX_CAMERA_BITRATE`` /
-  ``BOX_CAMERA_INDEX`` / ``BOX_CAMERA_SKIP_PROBE`` (MIPI; see module constants for USB defaults).
+  ``BOX_CAMERA_INDEX`` / ``BOX_CAMERA_SKIP_PROBE`` (Pi MIPI; see module constants for USB defaults).
+- ``BOX_CAMERA_BACKEND`` — ``libcamera`` (Pi) or ``openipc`` (Majestic). Autodetected.
+- ``BOX_MAJESTIC_URL`` — Majestic HTTP base (default ``http://127.0.0.1``).
 """
 
 from __future__ import annotations
@@ -51,7 +58,7 @@ import subprocess
 import time
 from typing import List, Literal, Optional, Tuple
 
-# RTP UDP (Pi → connected HTTP client IP).
+# RTP UDP (board → connected HTTP client IP).
 STREAM_PORT = 5004
 
 CameraSource = Literal["mipi", "usb"]
@@ -104,7 +111,9 @@ def _normalize_camera_error(raw: str) -> str:
     t = (raw or "").strip()
     low = t.lower()
     if not t:
-        return "Camera stream failed (no details from rpicam-vid / gstreamer)."
+        return "Camera stream failed (no details from rpicam-vid / GStreamer / Majestic)."
+    if "majestic" in low:
+        return t[-1200:]
     if "no cameras available" in low or "no camera available" in low:
         return "No camera detected by libcamera."
     if "no usb camera" in low:
@@ -332,11 +341,22 @@ def gstreamer_viewer_argv(
 
 def probe_cameras(timeout: float = 5.0) -> Tuple[bool, str]:
     """
-    Return (True, "") if a libcamera camera appears available, else (False, message).
+    Return (True, "") if a MIPI camera appears available, else (False, message).
+    OpenIPC: Majestic HTTP / process. Pi: libcamera ``rpicam-hello --list-cameras``.
     Skipped when BOX_CAMERA_SKIP_PROBE=1.
     """
     if os.environ.get("BOX_CAMERA_SKIP_PROBE", "").strip() in ("1", "true", "yes"):
         return True, ""
+    try:
+        from drone_control.sbc import camera_backend
+    except ImportError:
+        from sbc import camera_backend  # type: ignore
+    if camera_backend() == "openipc":
+        try:
+            from drone_control.majestic import probe_majestic
+        except ImportError:
+            from majestic import probe_majestic  # type: ignore
+        return probe_majestic(timeout=timeout)
     hello = _which_camera_tool("rpicam-hello", "libcamera-hello")
     if hello is None:
         return True, ""
@@ -519,12 +539,21 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
         pass
 
 
+def _openipc_mipi() -> bool:
+    try:
+        from drone_control.sbc import camera_backend
+    except ImportError:
+        from sbc import camera_backend  # type: ignore
+    return camera_backend() == "openipc"
+
+
 class CameraStream:
     """
-    Run/stop a Raspberry Pi camera pipeline in a subprocess (no extra Python deps).
+    Run/stop a camera pipeline.
 
-    Default: MIPI hardware H264 → GStreamer RTP/UDP on port 5004.
-    Alternate: auto-detect USB UVC → MJPEG (or YUY2+jpegenc) → RTP/JPEG.
+    Raspberry Pi MIPI: ``rpicam-vid`` | GStreamer RTP/UDP on port 5004.
+    Luckfox / OpenIPC MIPI: Majestic ``outgoing`` RTP push to the same port.
+    USB: auto-detect UVC → MJPEG (or YUY2+jpegenc) → RTP/JPEG.
     """
 
     def __init__(self, argv: Optional[List[str]] = None):
@@ -532,6 +561,7 @@ class CameraStream:
         self._client_host: Optional[str] = None
         self._source: CameraSource = "mipi"
         self._proc: Optional[subprocess.Popen] = None
+        self._majestic_push = False
         self._last_error: Optional[str] = None
 
     def set_client_host(self, host: str) -> None:
@@ -560,6 +590,17 @@ class CameraStream:
 
     @property
     def is_running(self) -> bool:
+        if self._majestic_push:
+            try:
+                from drone_control.majestic import majestic_running
+            except ImportError:
+                from majestic import majestic_running  # type: ignore
+            if majestic_running():
+                return True
+            self._majestic_push = False
+            if self._last_error is None:
+                self._last_error = "Majestic stopped while RTP outgoing was enabled."
+            return False
         proc = self._proc
         if proc is None:
             return False
@@ -577,8 +618,26 @@ class CameraStream:
         self._proc = None
         return False
 
+    def _start_majestic(self) -> bool:
+        try:
+            from drone_control.majestic import enable_outgoing_rtp
+        except ImportError:
+            from majestic import enable_outgoing_rtp  # type: ignore
+        host = self._client_host
+        if not host:
+            self._last_error = "No connected client IP (connect from the ground station first)."
+            return False
+        try:
+            enable_outgoing_rtp(host, STREAM_PORT)
+        except (OSError, ValueError, RuntimeError) as e:
+            self._last_error = _normalize_camera_error(str(e))
+            return False
+        self._majestic_push = True
+        _LOG.info("OpenIPC Majestic MIPI RTP → %s:%s", host, STREAM_PORT)
+        return True
+
     def start(self, client_host: Optional[str] = None, source: Optional[str] = None) -> bool:
-        """Spawn the streamer. Returns False if spawn fails or the process exits immediately."""
+        """Start MIPI/USB streaming. Returns False if the backend fails immediately."""
         if source is not None:
             new_src = normalize_camera_source(source)
             if self.is_running and new_src != self._source:
@@ -597,6 +656,8 @@ class CameraStream:
             if not ok_probe:
                 self._last_error = probe_err
                 return False
+            if self._argv_override is None and _openipc_mipi():
+                return self._start_majestic()
         elif self._source == "usb":
             ok_probe, probe_err = probe_usb_camera()
             if not ok_probe:
@@ -640,10 +701,21 @@ class CameraStream:
         return True
 
     def stop(self) -> None:
-        """Terminate the streamer subprocess (and pipeline children)."""
+        """Stop Majestic RTP push and/or terminate the streamer subprocess."""
+        if self._majestic_push:
+            self._majestic_push = False
+            try:
+                from drone_control.majestic import disable_outgoing_rtp
+            except ImportError:
+                from majestic import disable_outgoing_rtp  # type: ignore
+            try:
+                disable_outgoing_rtp()
+            except Exception as e:
+                _LOG.warning("Majestic outgoing disable failed: %s", e)
         proc = self._proc
         self._proc = None
         if proc is None:
+            self._last_error = None
             return
         _terminate_process_group(proc)
         try:

@@ -1,4 +1,4 @@
-"""HTTP client for ``raspberry.box_server``.
+"""HTTP client for ``drone_control.box_server``.
 
 ``GET /api/status`` is open (no token). POST commands require the bridge handshake token.
 """

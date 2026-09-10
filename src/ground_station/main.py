@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 PC / laptop: read a local joystick (controller_map.txt + on-screen map table), show 16 channel meters,
-TCP-handshake with the Pi bridge on Connect, then UDP-send 16-channel frames at the configured rate.
-Includes Box and Drone telemetry tabs (``raspberry.box_server`` status + CRSF link).
+TCP-handshake with the SBC bridge on Connect, then UDP-send 16-channel frames at the configured rate.
+Includes Box and Drone telemetry tabs (``drone_control.box_server`` status + CRSF link).
 
 From the repo root::
 

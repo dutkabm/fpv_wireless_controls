@@ -29,7 +29,7 @@ class SystemStatus:
     instance over time to accumulate current state, or ``capture(box)`` for a
     one-off read.
 
-    ``box`` must be a :class:`raspberry.box_control.BoxController` instance.
+    ``box`` must be a :class:`drone_control.box_control.BoxController` instance.
     """
 
     monotonic_s: float = 0.0

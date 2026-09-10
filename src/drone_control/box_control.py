@@ -1,15 +1,16 @@
 """
-Raspberry Pi 4 ground-station / enclosure controller.
+Enclosure controller (Raspberry Pi or Luckfox Pico Pro/Max).
 
 - BME280 or BMP280 on I2C: temperature (and humidity on BME280), pressure.
 - ADS1115 on I2C: box battery and drone battery via 20 kΩ / 2 kΩ dividers
   (ADC sees Vbat * 2/22 → multiply measured pin voltage by 11 for Vbat).
 - GPIO: status LED, servo PWM, drone power enable (e.g. MOSFET / relay gate).
-- Camera stream: optional; see ``raspberry.video`` (`CameraStream`).
+- Camera stream: optional; see ``drone_control.video`` (`CameraStream`).
+  OpenIPC Luckfox: MIPI is Majestic RTP push, not rpicam-vid.
 
 Wire ADS1115 A0 → box divider tap, A1 → drone divider tap; common ground.
 
-Dataclasses live in ``raspberry.models`` (`DividerConfig`, `SystemStatus`).
+Dataclasses live in ``drone_control.models`` (`DividerConfig`, `SystemStatus`).
 """
 
 from __future__ import annotations
@@ -21,8 +22,10 @@ from typing import Literal, Optional, Tuple, Union
 
 if __package__:
     from . import gpio_env  # noqa: F401 — before gpiozero
+    from .sbc import BOARD_LUCKFOX, get_board_profile
 else:
     import gpio_env  # noqa: F401
+    from sbc import BOARD_LUCKFOX, get_board_profile  # type: ignore
 
 _LOG = logging.getLogger(__name__)
 
@@ -33,20 +36,30 @@ else:
     from models import DividerConfig, SystemStatus
     from video import CameraStream
 
-# BCM GPIO (board header pins vary by Pi model).
-BOX_LED_PIN = 17
-BOX_SERVO_PIN = 13
-BOX_DRONE_POWER_PIN = 26
+_PROFILE = get_board_profile()
 
-# export BOX_I2C_BUS=1   # Linux device /dev/i2c-1 (enable I2C in raspi-config)
+# Defaults follow the board profile (Pi BCM vs Luckfox Linux GPIO). Override with
+# BOX_LED_PIN / BOX_SERVO_PIN / BOX_DRONE_POWER_PIN / BOX_SERVO_PWMCHIP / BOX_I2C_BUS.
+BOX_LED_PIN = int(os.environ.get("BOX_LED_PIN", str(_PROFILE.led_pin)))
+BOX_SERVO_PIN = int(os.environ.get("BOX_SERVO_PIN", str(_PROFILE.servo_pin)))
+BOX_DRONE_POWER_PIN = int(os.environ.get("BOX_DRONE_POWER_PIN", str(_PROFILE.drone_power_pin)))
+
+# export BOX_I2C_BUS=1   # Pi /dev/i2c-1; Luckfox OpenIPC typically /dev/i2c-3
 
 
 def _i2c_bus_id() -> int:
-    return int(os.environ.get("BOX_I2C_BUS", "1"))
+    return int(os.environ.get("BOX_I2C_BUS", str(_PROFILE.i2c_bus)))
+
+
+def _servo_pwmchip() -> Optional[int]:
+    raw = (os.environ.get("BOX_SERVO_PWMCHIP") or "").strip()
+    if raw:
+        return int(raw)
+    return _PROFILE.servo_pwmchip
 
 
 def _open_i2c():
-    """Open the Pi hardware I2C controller by bus number (not GPIO bit-bang)."""
+    """Open the hardware I2C controller by bus number (not GPIO bit-bang)."""
     bid = _i2c_bus_id()
     try:
         from adafruit_extended_bus import ExtendedI2C
@@ -62,7 +75,8 @@ def _open_i2c():
     except ImportError as e:
         raise ImportError(
             "I2C libs missing (need adafruit-blinka + adafruit-extended-bus). "
-            "On the Pi: pip3 install -r src/raspberry/requirements.txt"
+            "Raspberry Pi: pip3 install -r src/drone_control/requirements-raspberry.txt "
+            "(Linux / OpenIPC: requirements-linux.txt is pyserial only)."
         ) from e
 
 
@@ -168,7 +182,7 @@ class BatteryMonitor:
 
 
 class BoxOutputs:
-    """LED, servo, and drone power switching (gpiozero, BCM). Each output inits independently."""
+    """LED, servo, and drone power switching. gpiozero on Pi; sysfs GPIO/PWM on Luckfox."""
 
     def __init__(self, drone_power_active_high: bool = False) -> None:
         self._led = None
@@ -181,7 +195,44 @@ class BoxOutputs:
         self._led_pin = BOX_LED_PIN
         self._servo_pin = BOX_SERVO_PIN
         self._drone_pin = BOX_DRONE_POWER_PIN
+        self._pwmchip = _servo_pwmchip()
 
+        if _PROFILE.gpio_backend == "sysfs" or _PROFILE.name == BOARD_LUCKFOX:
+            self._init_sysfs(drone_power_active_high)
+            return
+        self._init_gpiozero(drone_power_active_high)
+
+    def _init_sysfs(self, drone_power_active_high: bool) -> None:
+        if __package__:
+            from .linux_gpio import SysfsDigitalOut, SysfsPwmServo
+        else:
+            from linux_gpio import SysfsDigitalOut, SysfsPwmServo  # type: ignore
+
+        try:
+            self._led = SysfsDigitalOut(self._led_pin, initial_value=False)
+        except Exception as e:
+            self.led_error = str(e)
+
+        try:
+            chip = self._pwmchip
+            if chip is None:
+                raise RuntimeError(
+                    "No PWM chip configured (set BOX_SERVO_PWMCHIP, e.g. 10 for PWM10_M1)"
+                )
+            self._servo = SysfsPwmServo(chip)
+        except Exception as e:
+            self.servo_error = str(e)
+
+        try:
+            self._drone_power = SysfsDigitalOut(
+                self._drone_pin,
+                active_high=drone_power_active_high,
+                initial_value=not drone_power_active_high,
+            )
+        except Exception as e:
+            self.drone_power_error = str(e)
+
+    def _init_gpiozero(self, drone_power_active_high: bool) -> None:
         try:
             from gpiozero import DigitalOutputDevice, Servo
         except Exception as e:
@@ -385,11 +436,11 @@ class BoxController:
         client_host: Optional[str] = None,
         source: Optional[str] = None,
     ) -> bool:
-        """Start the Pi camera UDP stream to ``client_host`` (``mipi`` or ``usb``)."""
+        """Start the camera UDP stream to ``client_host`` (``mipi`` or ``usb``)."""
         return self.camera_stream.start(client_host, source=source)
 
     def camera_stream_stop(self) -> None:
-        """Stop the Pi camera stream subprocess."""
+        """Stop the camera stream (Pi subprocess or OpenIPC Majestic RTP push)."""
         self.camera_stream.stop()
 
     def read_temperature_c(self) -> float:

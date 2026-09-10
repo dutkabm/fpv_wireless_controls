@@ -353,7 +353,7 @@ class NetworkJoystickUI:
 
         title = ctk.CTkLabel(
             joy_tab,
-            text="Network joystick → Pi bridge (TCP connect · UDP channels)",
+            text="Network joystick → drone control (TCP connect · UDP channels)",
             font=ctk.CTkFont(size=18, weight="bold"),
         )
         title.grid(row=0, column=0, padx=0, pady=(0, 8), sticky="w")

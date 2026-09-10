@@ -1,10 +1,10 @@
 """
-Shared CRSF serial + telemetry snapshot for the Pi bridge process.
+Shared CRSF serial + telemetry snapshot for the TX bridge process.
 
-``raspberry.main`` writes; ``raspberry.box_server`` reads for ``GET /api/status``.
+``drone_control.main`` writes; ``drone_control.box_server`` reads for ``GET /api/status``.
 Standalone ``box_server`` leaves defaults (serial closed, empty telemetry).
 
-In ``uart`` mode the Pi emulates an ELRS RX talking to the FC: expect battery /
+In ``uart`` mode the board emulates an ELRS RX talking to the FC: expect battery /
 GPS / attitude telemetry, not RF LINK_STATISTICS (those come from a real radio).
 """
 

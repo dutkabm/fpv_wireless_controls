@@ -1,0 +1,9 @@
+# Generic Linux / OpenIPC (Luckfox Pico Pro/Max): TX bridge + box API
+# GPIO uses sysfs (linux_gpio.py). Do not install requirements-raspberry.txt
+# (RPi.GPIO / lgpio / gpiozero are Pi-only).
+#
+# OpenIPC images often ship without Python. If python3 is available:
+#   pip3 install -r src/drone_control/requirements-linux.txt
+#   PYTHONPATH=src python3 -m drone_control.main
+#
+pyserial>=3.5

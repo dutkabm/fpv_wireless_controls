@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Raspberry Pi TX bridge: receive joystick channel frames over UDP, forward CRSF
+TX bridge: receive joystick channel frames over UDP, forward CRSF
 to either a USB TX module or a direct FC UART (``crsf_output`` mode).
 
-From the repo root::
+Runs on Raspberry Pi or Luckfox Pico Pro/Max (OpenIPC). From the repo root::
 
-    PYTHONPATH=src python3 -m raspberry.main
+    PYTHONPATH=src python3 -m drone_control.main
 
-Serial settings default from ``src/ground_station/controller_map.txt`` on the Pi if present (``--config``).
-Starts ``raspberry.box_server`` in-process (shared box HTTP token in handshake).
+Serial settings default from ``src/ground_station/controller_map.txt`` if present (``--config``).
+Starts ``drone_control.box_server`` in-process (shared box HTTP token in handshake).
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ _SRC_ROOT = Path(__file__).resolve().parents[1]
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
-from raspberry import gpio_env  # noqa: F401 — before gpiozero (box_server thread)
-from raspberry.crsf_output import (
+from drone_control import gpio_env  # noqa: F401 — before gpiozero (box_server thread)
+from drone_control.crsf_output import (
     CRSF_OUTPUT_TX,
     CRSF_OUTPUT_UART,
     DEFAULT_UART_PORT,
@@ -53,7 +53,7 @@ from common.network import (
     unpack_channel_datagram,
 )
 from common.tx_port import is_autoselect_serial_port, resolve_crsf_serial_port
-from raspberry import crsf_bridge_state
+from drone_control import crsf_bridge_state
 
 log = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ def _tcp_port_available(bind: str, port: int) -> bool:
 
 def _start_box_http_server(token: str) -> None:
     """Run ``box_server`` in-process so it shares the in-memory token."""
-    from raspberry import box_server as box_server_mod
+    from drone_control import box_server as box_server_mod
 
     bind = "0.0.0.0"
     port = box_server_mod.BOX_HTTP_PORT
@@ -163,12 +163,12 @@ def main() -> None:
         "--output",
         choices=(CRSF_OUTPUT_TX, CRSF_OUTPUT_UART),
         default=None,
-        help="CRSF output: tx=USB TX module, uart=Pi UART to FC (default from config or uart)",
+        help="CRSF output: tx=USB TX module, uart=SoC UART to FC (default from config or uart)",
     )
     ap.add_argument(
         "--uart",
         default=None,
-        help=f"Direct FC UART device when --output uart (default Pi primary UART: {DEFAULT_UART_PORT})",
+        help=f"Direct FC UART device when --output uart (default {DEFAULT_UART_PORT})",
     )
     ap.add_argument(
         "--config",
@@ -191,6 +191,10 @@ def main() -> None:
         level=logging.DEBUG if args.debug else logging.INFO,
         format="%(levelname)s: %(message)s",
     )
+    from drone_control.sbc import get_board_profile
+
+    _board = get_board_profile()
+    log.info("Board: %s (GPIO %s, UART %s, I2C %s, camera %s)", _board.display_name, _board.gpio_backend, _board.uart_port, f"/dev/i2c-{_board.i2c_bus}", _board.camera_backend)
 
     box_http_token = secrets.token_urlsafe(24)
     _start_box_http_server(box_http_token)
@@ -302,13 +306,16 @@ def main() -> None:
         if resolved is None:
             if not waiting_announced:
                 if output_mode == CRSF_OUTPUT_UART:
+                    from drone_control.sbc import get_board_profile
+
+                    prof = get_board_profile()
                     log.info(
-                        "Direct UART mode: no Pi UART device yet "
-                        "(tried serial0/ttyAMA0/ttyS0/ttyAMA10; preference %r). "
-                        "Enable serial hardware (raspi-config → Interface → Serial: login shell No, "
-                        "serial port Yes; on Pi 5 also dtparam=uart0 in /boot/firmware/config.txt). "
+                        "Direct UART mode: no SoC UART device yet "
+                        "(tried %s; preference %r). %s "
                         "UDP/TCP listeners are up; will keep retrying.",
+                        "/".join(os.path.basename(p) for p in prof.uart_candidates),
                         uart_port,
+                        prof.uart_enable_hint,
                     )
                 else:
                     log.info(
@@ -338,9 +345,9 @@ def main() -> None:
         except (serial.SerialException, OSError) as e:
             hint = ""
             if output_mode == CRSF_OUTPUT_UART and getattr(e, "errno", None) == 2:
-                hint = (
-                    " Enable UART (raspi-config serial hardware) or set uart_port to an existing device."
-                )
+                from drone_control.sbc import get_board_profile
+
+                hint = " " + get_board_profile().uart_enable_hint
             log.warning("Could not open serial %s: %s;%s will retry.", resolved, e, hint)
             return
         ser = new_ser
@@ -352,13 +359,13 @@ def main() -> None:
         _publish_telemetry()
         if output_mode == CRSF_OUTPUT_UART:
             log.info(
-                "Serial open: %s @ %d (Pi emulates CRSF RX → FC). "
+                "Serial open: %s @ %d (board emulates CRSF RX → FC). "
                 "Baud must match the FC CRSF port.",
                 resolved,
                 baud_rate,
             )
             log.info(
-                "Wire Pi TX→FC RX and Pi RX←FC TX (full duplex). "
+                "Wire board UART TX→FC RX and board UART RX←FC TX (full duplex). "
                 "Expect battery/GPS/attitude from FC — not RF LQ (no radio link)."
             )
         elif is_autoselect_serial_port(serial_port_pref):
@@ -507,7 +514,7 @@ def main() -> None:
                 log.info(
                     "CRSF: 0 UART RX bytes (mode=uart baud=%d path=%s). "
                     "Confirm FC serial baud, CRSF protocol on that port, "
-                    "and Pi RX ← FC TX is wired. Telemetry = FC sensors, not RF LQ.",
+                    "and board UART RX ← FC TX is wired. Telemetry = FC sensors, not RF LQ.",
                     baud_rate,
                     current_serial_path,
                 )

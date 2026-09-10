@@ -16,7 +16,7 @@ from typing import List, Optional, Tuple
 CHANNEL_PACKET_MAGIC = b"MRX1"
 CHANNEL_PAYLOAD_LEN = 4 + 32  # magic + 16×uint16
 
-# Fixed ports for network joystick client ↔ Pi bridge (override via CLI on both sides).
+# Fixed ports for network joystick client ↔ drone_control bridge (override via CLI on both sides).
 DEFAULT_UDP_CHANNEL_PORT = 50000
 DEFAULT_HANDSHAKE_TCP_PORT = 50001
 
