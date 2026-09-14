@@ -192,7 +192,15 @@ Same `python -m drone_control.main` bridge on a Rockchip RV1106 Luckfox Pico Pro
 
 **MIPI camera:** Majestic already owns the CSI sensor. Do not use `rpicam-vid` or stock `rkipc`. Box **Video** on/off sets Majestic `outgoing.server` to `udp://<ground-station>:5004` (RTP H264, same viewer as Pi MIPI). Keep Majestic running. Optional: `BOX_MAJESTIC_URL` (default `http://127.0.0.1`).
 
-**UART (CRSF to FC):** default `/dev/ttyS3` (UART3_M1). Override with `uart_port` in `controller_map.txt` if needed. Enable UART3 in OpenIPC pinmux; do not use UART2 (debug console).
+**UART (CRSF to FC):** default `/dev/ttyS3` (UART3_M1), baud **420000**. Override with `uart_port` in `controller_map.txt` if needed. Enable UART3 in OpenIPC pinmux. Do **not** use UART2 (header pins 1/2) — that is the debug console.
+
+| Function | Header pin | Signal | SoC pad |
+| --- | --- | --- | --- |
+| TX (board → FC RX) | **19** | UART3_TX_M1 | GPIO1_D0 |
+| RX (board ← FC TX) | **20** | UART3_RX_M1 | GPIO1_D1 |
+| GND | **18** | GND | — |
+
+Wire full duplex: pin 19 → flight-controller RX, pin 20 ← flight-controller TX, pin 18 to FC ground. Baud must match the FC CRSF port.
 
 **GPIO / PWM** (Linux numbers, Pico-style header — not Pi BCM):
 

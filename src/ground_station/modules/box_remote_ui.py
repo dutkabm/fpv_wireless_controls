@@ -91,6 +91,7 @@ class BoxRemotePanel:
         row += 1
         self._status_labels: dict[str, ctk.CTkLabel] = {}
         labels = [
+            ("Box I/O", "box_io_enabled"),
             ("Sensor", "sensor_kind"),
             ("Temp °C", "temperature_c"),
             ("RH %", "humidity_percent"),
@@ -226,10 +227,29 @@ class BoxRemotePanel:
         self._sync_toggle_buttons(d)
         if not d.get("ok"):
             return
-        if not d.get("hardware_ok"):
+        if not d.get("hardware_ok") and d.get("box_io_enabled", True):
             return
 
+        io_on = bool(d.get("box_io_enabled", True))
+        io_keys = {
+            "sensor_kind",
+            "temperature_c",
+            "humidity_percent",
+            "pressure_hpa",
+            "box_battery_v",
+            "drone_battery_v",
+            "env_error",
+            "battery_error",
+            "led_on",
+            "servo_active",
+            "drone_power_on",
+        }
+
         def fmt_val(key: str, v) -> str:
+            if key == "box_io_enabled":
+                return "on" if v else "off (uart CRSF)"
+            if not io_on and key in io_keys:
+                return "—"
             if v is None:
                 return "n/a"
             if isinstance(v, bool):
@@ -316,8 +336,11 @@ class BoxRemotePanel:
     def _set_controls_enabled(self, on: bool) -> None:
         self._controls_enabled = bool(on)
         st = "normal" if on else "disabled"
-        for b in (self.cam_toggle_b, self.led_toggle_b, self.servo_toggle_b, self.drone_power_toggle_b):
-            b.configure(state=st)
+        self.cam_toggle_b.configure(state=st)
+        io = on and bool(self._last_status.get("box_io_enabled", True))
+        io_st = "normal" if io else "disabled"
+        for b in (self.led_toggle_b, self.servo_toggle_b, self.drone_power_toggle_b):
+            b.configure(state=io_st)
         self._sync_usb_cam_checkbox_state()
 
     def _sync_usb_cam_checkbox_state(self) -> None:
@@ -349,14 +372,17 @@ class BoxRemotePanel:
             btn.configure(text=text, fg_color=fg, hover_color=hover)
         self._sync_usb_cam_checkbox_state()
 
+    def _box_io_on(self) -> bool:
+        return bool(self._last_status.get("box_io_enabled", True))
+
     def _toggle_led(self) -> None:
-        if self.client is None:
+        if self.client is None or not self._box_io_on():
             return
         on = not bool(self._last_status.get("led_on"))
         self._led(on)
 
     def _toggle_servo(self) -> None:
-        if self.client is None:
+        if self.client is None or not self._box_io_on():
             return
         if bool(self._last_status.get("servo_active")):
             self._servo_off()
@@ -370,7 +396,7 @@ class BoxRemotePanel:
         self._cam(on)
 
     def _toggle_drone_power(self) -> None:
-        if self.client is None:
+        if self.client is None or not self._box_io_on():
             return
         on = not bool(self._last_status.get("drone_power_on"))
         self._drone_power(on)

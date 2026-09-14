@@ -13,6 +13,7 @@ Environment:
 
 Bearer token for POST routes lives in process memory (``set_http_token``). ``drone_control.main``
 generates one token, starts this server in a thread, and sends the same token in the TCP joystick handshake.
+In ``uart`` CRSF mode, LED/servo/drone-power and I2C sensors are not initialized.
 
 Routes (JSON):
 
@@ -192,6 +193,7 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
                     "hardware_ok": False,
                     "hardware_error": err,
                     "sensors_ok": False,
+                    "box_io_enabled": bool(getattr(box, "enclosure_io", True)),
                     **self._crsf_fields(),
                 },
             )
@@ -202,13 +204,14 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
         d["sensors_ok"] = sensors_ok
         if box.runtime_sensor_error:
             d["hardware_error"] = box.runtime_sensor_error
-        g = box.gpio
-        if g.led_error:
-            d["led_error"] = g.led_error
-        if g.servo_error:
-            d["servo_error"] = g.servo_error
-        if g.drone_power_error:
-            d["drone_power_error"] = g.drone_power_error
+        if box.enclosure_io:
+            g = box.gpio
+            if g.led_error:
+                d["led_error"] = g.led_error
+            if g.servo_error:
+                d["servo_error"] = g.servo_error
+            if g.drone_power_error:
+                d["drone_power_error"] = g.drone_power_error
         d.update(self._crsf_fields())
         self._send_json(200, {"ok": True, **d})
 
@@ -261,6 +264,9 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
                 return
             _note_stream_client(box, self)
             try:
+                if path in (API_LED, API_SERVO, API_DRONE_POWER) and not box.enclosure_io:
+                    self._fail(400, "LED/servo/drone power unused in uart CRSF mode")
+                    return
                 if path == API_LED:
                     if "on" not in body:
                         self._fail(400, "missing on")

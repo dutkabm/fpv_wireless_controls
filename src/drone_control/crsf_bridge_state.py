@@ -39,6 +39,7 @@ _lock = threading.Lock()
 _output_mode: str = ""
 _serial_open: bool = False
 _serial_path: Optional[str] = None
+_serial_error: Optional[str] = None
 _telemetry: Dict[str, Any] = {}
 _telemetry_mono: float = 0.0
 _link_mono: float = 0.0
@@ -52,13 +53,34 @@ def set_output_mode(mode: str) -> None:
         _output_mode = (mode or "").strip()
 
 
-def set_serial(*, open_: bool, path: Optional[str] = None) -> None:
-    global _serial_open, _serial_path
+def enclosure_io_enabled() -> bool:
+    """Box I2C sensors and GPIO (LED/servo/drone power) run in TX-module mode only.
+
+    Direct FC UART (``uart``) does not use the enclosure. Empty mode (standalone
+    ``box_server``) keeps I2C/PINIO on.
+    """
+    with _lock:
+        mode = _output_mode
+    if not mode:
+        return True
+    try:
+        from drone_control.crsf_output import CRSF_OUTPUT_UART, normalize_crsf_output_mode
+    except ImportError:
+        from crsf_output import CRSF_OUTPUT_UART, normalize_crsf_output_mode  # type: ignore
+    return normalize_crsf_output_mode(mode) != CRSF_OUTPUT_UART
+
+
+def set_serial(*, open_: bool, path: Optional[str] = None, error: Optional[str] = None) -> None:
+    global _serial_open, _serial_path, _serial_error
     with _lock:
         _serial_open = bool(open_)
         _serial_path = path if open_ and path else None
-        if not open_:
+        if open_:
+            _serial_error = None
+        else:
             _serial_path = None
+            if error is not None:
+                _serial_error = (error or "").strip() or None
 
 
 def note_bus_rx() -> None:
@@ -92,6 +114,7 @@ def snapshot() -> Dict[str, Any]:
         bus_age = (now - _bus_mono) if _bus_mono > 0 else None
         serial_open = _serial_open
         serial_path = _serial_path
+        serial_error = _serial_error
         mode = _output_mode
 
     lq = telem.get("Uplink LQ")
@@ -123,6 +146,7 @@ def snapshot() -> Dict[str, Any]:
     return {
         "crsf_serial_open": serial_open,
         "crsf_serial_path": serial_path or "",
+        "crsf_serial_error": serial_error or "",
         "crsf_output": mode,
         "crsf_link_ok": connected,
         "crsf_rf_link_ok": rf_link_ok,

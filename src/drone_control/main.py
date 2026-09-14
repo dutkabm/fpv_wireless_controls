@@ -196,9 +196,6 @@ def main() -> None:
     _board = get_board_profile()
     log.info("Board: %s (GPIO %s, UART %s, I2C %s, camera %s)", _board.display_name, _board.gpio_backend, _board.uart_port, f"/dev/i2c-{_board.i2c_bus}", _board.camera_backend)
 
-    box_http_token = secrets.token_urlsafe(24)
-    _start_box_http_server(box_http_token)
-
     cfg_serial, cfg_mode, cfg_uart = load_serial_from_config(args.config)
     serial_port_pref = args.serial if args.serial is not None else cfg_serial
     output_mode = args.output if args.output is not None else cfg_mode
@@ -207,6 +204,12 @@ def main() -> None:
         args.uart if args.uart is not None else cfg_uart,
         default=DEFAULT_UART_PORT,
     )
+    crsf_bridge_state.set_output_mode(output_mode)
+    if output_mode == CRSF_OUTPUT_UART:
+        log.info("uart CRSF mode: box I2C and GPIO (PINIO) disabled")
+
+    box_http_token = secrets.token_urlsafe(24)
+    _start_box_http_server(box_http_token)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -275,13 +278,12 @@ def main() -> None:
     last_serial_attempt_s = 0.0
     waiting_announced = False
     crsf_reader = CrsfSerialReader()
-    crsf_bridge_state.set_output_mode(output_mode)
     crsf_bridge_state.set_serial(open_=False)
 
     def _publish_telemetry() -> None:
         crsf_bridge_state.update_telemetry(crsf_reader.telemetry)
 
-    def close_serial() -> None:
+    def close_serial(error: Optional[str] = None) -> None:
         nonlocal ser, current_serial_path, waiting_announced
         if ser is not None:
             try:
@@ -292,7 +294,7 @@ def main() -> None:
         current_serial_path = None
         waiting_announced = False
         crsf_reader.telemetry.clear()
-        crsf_bridge_state.set_serial(open_=False)
+        crsf_bridge_state.set_serial(open_=False, error=error)
         _publish_telemetry()
 
     def try_open_serial() -> None:
@@ -304,11 +306,15 @@ def main() -> None:
             uart_port=uart_port,
         )
         if resolved is None:
-            if not waiting_announced:
-                if output_mode == CRSF_OUTPUT_UART:
-                    from drone_control.sbc import get_board_profile
+            if output_mode == CRSF_OUTPUT_UART:
+                from drone_control.sbc import get_board_profile
 
-                    prof = get_board_profile()
+                prof = get_board_profile()
+                crsf_bridge_state.set_serial(
+                    open_=False,
+                    error=f"no UART device (want {uart_port})",
+                )
+                if not waiting_announced:
                     log.info(
                         "Direct UART mode: no SoC UART device yet "
                         "(tried %s; preference %r). %s "
@@ -317,13 +323,19 @@ def main() -> None:
                         uart_port,
                         prof.uart_enable_hint,
                     )
-                else:
+                    waiting_announced = True
+            else:
+                crsf_bridge_state.set_serial(
+                    open_=False,
+                    error="no TX USB-UART detected",
+                )
+                if not waiting_announced:
                     log.info(
                         "No TX USB-UART detected yet (Linux: ttyACM*/ttyUSB*; macOS: cu.usbserial* / cu.usbmodem*; "
                         "preference %r). UDP/TCP listeners are up; will keep scanning.",
                         serial_port_pref,
                     )
-                waiting_announced = True
+                    waiting_announced = True
             return
         try:
             new_ser = serial.Serial(
@@ -349,6 +361,7 @@ def main() -> None:
 
                 hint = " " + get_board_profile().uart_enable_hint
             log.warning("Could not open serial %s: %s;%s will retry.", resolved, e, hint)
+            crsf_bridge_state.set_serial(open_=False, error=f"open {resolved} failed")
             return
         ser = new_ser
         current_serial_path = resolved
@@ -604,7 +617,7 @@ def main() -> None:
                     current_serial_path,
                     e,
                 )
-                close_serial()
+                close_serial(error="serial I/O failed")
                 last_serial_attempt_s = time.monotonic()
                 bytes_rx_total = 0
                 first_rx_logged = False
