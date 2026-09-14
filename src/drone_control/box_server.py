@@ -17,7 +17,8 @@ In ``uart`` CRSF mode, LED/servo/drone-power and I2C sensors are not initialized
 
 Routes (JSON):
 
-- ``GET /api/status`` — open (no token); ``hardware_ok``, live fields from :class:`drone_control.models.SystemStatus`.
+- ``GET /api/status`` — open (no token); ``hardware_ok``, live fields from :class:`drone_control.models.SystemStatus`
+  including ``stream`` / ``stream_url`` (playable RTSP or RTP descriptor).
 - ``POST /api/led`` — token required; body ``{"on": true|false}``.
 - ``POST /api/servo`` — token required; body ``{"active": true|false}`` (false detaches PWM).
 - ``POST /api/camera`` — token required; body ``{"streaming": true|false, "source": "mipi"|"usb"}``
@@ -150,6 +151,20 @@ def _read_json_body(handler: BaseHTTPRequestHandler, max_len: int = 4096) -> Any
     return json.loads(raw.decode("utf-8"))
 
 
+def _stream_fields(box: BoxController) -> dict:
+    try:
+        from drone_control.models import _stream_for_box
+    except ImportError:
+        from models import _stream_for_box  # type: ignore
+    try:
+        stream = _stream_for_box(box)
+    except Exception:
+        return {}
+    if not stream:
+        return {}
+    return {"stream": stream, "stream_url": stream.get("url")}
+
+
 class BoxHTTPHandler(BaseHTTPRequestHandler):
     state: ClassVar[BoxServerState] = STATE
     protocol_version = "HTTP/1.1"
@@ -194,6 +209,7 @@ class BoxHTTPHandler(BaseHTTPRequestHandler):
                     "hardware_error": err,
                     "sensors_ok": False,
                     "box_io_enabled": bool(getattr(box, "enclosure_io", True)),
+                    **_stream_fields(box),
                     **self._crsf_fields(),
                 },
             )

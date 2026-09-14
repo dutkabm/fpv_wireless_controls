@@ -10,6 +10,12 @@ from typing import Any, Callable, Optional
 import customtkinter as ctk
 import tkinter.messagebox as tk_messagebox
 
+from common.stream_info import (
+    format_stream_url,
+    gstreamer_play_argv,
+    rtp_stream,
+    stream_fingerprint,
+)
 from modules.box_remote import BOX_HTTP_PORT, BoxRemoteClient
 
 VIDEO_STREAM_PORT = 5004
@@ -18,7 +24,8 @@ TAB_POLL_MS = 3000  # Box tab visible: GET /api/status interval
 
 class BoxRemotePanel:
     """
-    Status poll + LED / servo / camera controls; GStreamer RTP viewer (H264 MIPI or JPEG USB).
+    Status poll + LED / servo / camera controls; GStreamer player follows
+    ``stream`` from ``GET /api/status`` (RTSP or RTP, codec/path/size per camera).
 
     ``get_target_ip`` should return the same IPv4 as the joystick bridge Target IP field.
     """
@@ -102,6 +109,8 @@ class BoxRemotePanel:
             ("Batt error", "battery_error"),
             ("Camera", "camera_streaming"),
             ("Cam source", "camera_source"),
+            ("Stream URL", "stream_url"),
+            ("Stream", "stream"),
             ("LED", "led_on"),
             ("Servo", "servo_active"),
             ("Drone power", "drone_power_on"),
@@ -115,6 +124,8 @@ class BoxRemotePanel:
 
         self._video_proc: Optional[subprocess.Popen] = None
         self._video_source: str = "mipi"
+        self._video_wanted = False
+        self._stream_fp: tuple = ()
 
     @staticmethod
     def _find_gst_launch() -> Optional[str]:
@@ -201,6 +212,8 @@ class BoxRemotePanel:
         self._sync_toggle_buttons({})
         self.usb_cam_var.set(False)
         self._video_source = "mipi"
+        self._video_wanted = False
+        self._stream_fp = ()
         self._stop_video_player()
 
     def shutdown(self) -> None:
@@ -218,16 +231,16 @@ class BoxRemotePanel:
             return
         self._apply_status(d)
         self._set_controls_enabled(True)
-        self._poll_after_id = self._root.after(TAB_POLL_MS, self._poll_tick)
+        self._poll_after_id = self._root.after(self._poll_ms(), self._poll_tick)
+
+    def _poll_ms(self) -> int:
+        return 800 if self._video_wanted else TAB_POLL_MS
 
     def _apply_status(self, d: dict) -> None:
-        prev_cam = bool(self._last_status.get("camera_streaming"))
         if d.get("ok"):
             self._last_status = d
         self._sync_toggle_buttons(d)
         if not d.get("ok"):
-            return
-        if not d.get("hardware_ok") and d.get("box_io_enabled", True):
             return
 
         io_on = bool(d.get("box_io_enabled", True))
@@ -244,10 +257,25 @@ class BoxRemotePanel:
             "servo_active",
             "drone_power_on",
         }
+        host = self._get_target_ip().strip()
 
         def fmt_val(key: str, v) -> str:
             if key == "box_io_enabled":
                 return "on" if v else "off (uart CRSF)"
+            if key == "stream_url":
+                stream = d.get("stream") if isinstance(d.get("stream"), dict) else None
+                if stream:
+                    return format_stream_url(stream, host)
+                return str(v).replace("{host}", host) if v else "—"
+            if key == "stream":
+                if not isinstance(v, dict):
+                    return "—"
+                bits = [v.get("codec"), v.get("kind")]
+                if v.get("width") and v.get("height"):
+                    bits.append(f"{v['width']}x{v['height']}")
+                if v.get("fps"):
+                    bits.append(f"{v['fps']}fps")
+                return " ".join(str(b) for b in bits if b) or "—"
             if not io_on and key in io_keys:
                 return "—"
             if v is None:
@@ -266,61 +294,42 @@ class BoxRemotePanel:
                 continue
             lab.configure(text=fmt_val(key, d.get(key)))
 
-        cam_on = bool(d.get("camera_streaming"))
-        if prev_cam and not cam_on:
-            self._stop_video_player()
+        self._follow_stream(d)
 
     def _selected_camera_source(self) -> str:
         return "usb" if bool(self.usb_cam_var.get()) else "mipi"
 
-    def _play_argv(self, gst_bin: str, source: str = "mipi") -> list[str]:
-        """RTP UDP viewer: H264 for MIPI, JPEG for USB."""
-        src = "usb" if (source or "").strip().lower() == "usb" else "mipi"
-        if sys.platform == "darwin":
-            if src == "usb":
-                sink = ["videoconvert", "!", "osxvideosink", "sync=false"]
-            else:
-                sink = [
-                    "videoconvert",
-                    "!",
-                    "video/x-raw,format=UYVY",
-                    "!",
-                    "osxvideosink",
-                    "sync=false",
-                ]
-        else:
-            sink = ["videoconvert", "!", "autovideosink", "sync=false"]
-        if src == "usb":
-            return [
-                gst_bin,
-                "udpsrc",
-                f"port={VIDEO_STREAM_PORT}",
-                'caps=application/x-rtp,encoding-name=JPEG,payload=26',
-                "!",
-                "rtpjpegdepay",
-                "!",
-                "jpegdec",
-                "!",
-                *sink,
-            ]
-        return [
-            gst_bin,
-            "udpsrc",
-            f"port={VIDEO_STREAM_PORT}",
-            'caps=application/x-rtp,payload=96,encoding-name=H264',
-            "!",
-            "rtph264depay",
-            "!",
-            "h264parse",
-            "!",
-            "avdec_h264",
-            "!",
-            *sink,
-        ]
+    def _stream_from_status(self, d: dict) -> Optional[dict]:
+        stream = d.get("stream")
+        if isinstance(stream, dict) and stream.get("kind"):
+            return stream
+        src = (d.get("camera_source") or self._selected_camera_source() or "mipi").strip().lower()
+        if src in ("usb", "mipi") and d.get("camera_streaming"):
+            return rtp_stream("usb" if src == "usb" else "mipi").to_dict()
+        return None
+
+    def _follow_stream(self, d: dict) -> None:
+        """Keep GStreamer on the board-advertised URL while Video is wanted."""
+        if not self._video_wanted:
+            if not d.get("camera_streaming"):
+                self._stop_video_player()
+            return
+        stream = self._stream_from_status(d)
+        if stream:
+            self._sync_video_player(stream)
+
+    def _play_argv(self, gst_bin: str, stream: dict) -> list[str]:
+        return gstreamer_play_argv(
+            stream,
+            host=self._get_target_ip().strip(),
+            gst_bin=gst_bin,
+            macos=(sys.platform == "darwin"),
+        )
 
     def _stop_video_player(self) -> None:
         proc = self._video_proc
         self._video_proc = None
+        self._stream_fp = ()
         if proc is None:
             return
         try:
@@ -464,7 +473,15 @@ class BoxRemotePanel:
             return
         self._apply_status(d)
 
-    def _start_video_player(self, source: str = "mipi") -> bool:
+    def _sync_video_player(self, stream: dict) -> bool:
+        fp = stream_fingerprint(stream)
+        proc = self._video_proc
+        alive = proc is not None and proc.poll() is None
+        if alive and fp == self._stream_fp:
+            return True
+        return self._start_video_player(stream)
+
+    def _start_video_player(self, stream: Optional[dict] = None, source: str = "mipi") -> bool:
         gst_bin = self._find_video_player()
         if not gst_bin:
             tk_messagebox.showinfo(
@@ -474,15 +491,20 @@ class BoxRemotePanel:
                 parent=self._root,
             )
             return False
+        if not isinstance(stream, dict) or not stream.get("kind"):
+            src = "usb" if (source or "").strip().lower() == "usb" else "mipi"
+            stream = rtp_stream(src).to_dict()
         self._stop_video_player()
-        self._video_source = "usb" if source == "usb" else "mipi"
+        self._video_source = str(stream.get("source") or source or "mipi")
+        self._stream_fp = stream_fingerprint(stream)
         try:
             self._video_proc = subprocess.Popen(
-                self._play_argv(gst_bin, self._video_source),
+                self._play_argv(gst_bin, stream),
                 start_new_session=True,
             )
         except OSError as e:
             self._video_proc = None
+            self._stream_fp = ()
             tk_messagebox.showerror("Box", str(e), parent=self._root)
             return False
         return True
@@ -490,6 +512,7 @@ class BoxRemotePanel:
     def _cam(self, streaming: bool) -> None:
         if self.client is None:
             return
+        self._video_wanted = bool(streaming)
         source = self._selected_camera_source()
         if streaming:
             if not self._find_video_player():
@@ -499,6 +522,7 @@ class BoxRemotePanel:
                     "Install GStreamer: brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav",
                     parent=self._root,
                 )
+                self._video_wanted = False
                 return
         else:
             self._stop_video_player()
@@ -510,11 +534,13 @@ class BoxRemotePanel:
                 parent=self._root,
             )
             if streaming:
+                self._video_wanted = False
                 self._stop_video_player()
             return
         self._apply_status(d)
-        if streaming and bool(d.get("camera_streaming")):
-            active = (d.get("camera_source") or source or "mipi").strip().lower()
-            self._start_video_player(active)
-        elif not streaming:
+        if streaming:
+            stream = self._stream_from_status(d)
+            if stream:
+                self._sync_video_player(stream)
+        else:
             self._stop_video_player()

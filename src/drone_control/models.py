@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -46,6 +46,8 @@ class SystemStatus:
     camera_streaming: bool = False
     camera_source: str = "mipi"
     camera_stream_error: Optional[str] = None
+    stream: Optional[dict[str, Any]] = None
+    stream_url: Optional[str] = None
     env_error: Optional[str] = None
     battery_error: Optional[str] = None
     box_io_enabled: bool = True
@@ -89,9 +91,37 @@ class SystemStatus:
             self.camera_streaming = False
             self.camera_source = "mipi"
             self.camera_stream_error = None
+        self.stream = _stream_for_box(box)
+        url = None
+        if self.stream:
+            url = self.stream.get("url")
+            src = self.stream.get("source")
+            if src:
+                self.camera_source = str(src)
+        self.stream_url = url
 
     @classmethod
     def capture(cls, box) -> SystemStatus:
         s = cls()
         s.refresh(box)
         return s
+
+
+def _stream_for_box(box) -> Optional[dict[str, Any]]:
+    """Live playable stream: OpenIPC encoder process, else Pi RTP if Video is on."""
+    try:
+        from drone_control.stream_switch import current_stream_info
+
+        info = current_stream_info()
+        if info:
+            return info
+    except Exception:
+        pass
+    cs = getattr(box, "camera_stream", None)
+    if cs is None or not getattr(cs, "is_running", False):
+        return None
+    try:
+        from common.stream_info import rtp_stream
+    except ImportError:
+        return None
+    return rtp_stream(getattr(cs, "source", None) or "mipi").to_dict()

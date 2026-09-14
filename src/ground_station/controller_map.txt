@@ -1,6 +1,10 @@
 [General]
 joystick_index = 0
 crsf_output = uart
+# OpenIPC: RC channel 1-16. Low PWM = Majestic (MIPI), high = term-cam (thermal). 0 = off.
+video_rc_channel = 8
+video_rc_low_us = 1400
+video_rc_high_us = 1600
 
 [AxisMappings]
 axis_0 = channel:1, invert:false

@@ -54,6 +54,7 @@ from common.network import (
 )
 from common.tx_port import is_autoselect_serial_port, resolve_crsf_serial_port
 from drone_control import crsf_bridge_state
+from drone_control.stream_switch import RcVideoSwitcher, load_video_rc_from_config
 
 log = logging.getLogger(__name__)
 
@@ -183,6 +184,12 @@ def main() -> None:
         help="Identifier sent to clients during TCP handshake (default: login user name)",
     )
     ap.add_argument("--debug", action="store_true", help="Log each valid UDP joystick packet at DEBUG")
+    ap.add_argument(
+        "--video-rc-channel",
+        type=int,
+        default=None,
+        help="RC channel 1-16: low PWM=Majestic, high=term-cam (0 disables; default from config/env)",
+    )
     args = ap.parse_args()
 
     bridge_name = (args.name or "").strip() or getpass.getuser()
@@ -197,6 +204,9 @@ def main() -> None:
     log.info("Board: %s (GPIO %s, UART %s, I2C %s, camera %s)", _board.display_name, _board.gpio_backend, _board.uart_port, f"/dev/i2c-{_board.i2c_bus}", _board.camera_backend)
 
     cfg_serial, cfg_mode, cfg_uart = load_serial_from_config(args.config)
+    video_ch, video_low, video_high = load_video_rc_from_config(args.config)
+    if args.video_rc_channel is not None:
+        video_ch = args.video_rc_channel
     serial_port_pref = args.serial if args.serial is not None else cfg_serial
     output_mode = args.output if args.output is not None else cfg_mode
     baud_rate = baud_for_crsf_output(output_mode)
@@ -210,6 +220,19 @@ def main() -> None:
 
     box_http_token = secrets.token_urlsafe(24)
     _start_box_http_server(box_http_token)
+
+    video_switch = None
+    if video_ch > 0:
+        video_switch = RcVideoSwitcher(video_ch, video_low, video_high)
+        log.info(
+            "RC video switch: CH%s low<=%sµs Majestic, high>=%sµs term-cam "
+            "(idle process fully stopped; both cannot share the encoder)",
+            video_ch,
+            video_low,
+            video_high,
+        )
+    else:
+        log.info("RC video switch disabled (video_rc_channel=0)")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -555,6 +578,8 @@ def main() -> None:
                 stale = (now - last_rx) > fail_ns if fail_ns > 0 else False
             if ch is None or stale:
                 ch = failsafe_pwm
+            if video_switch is not None:
+                video_switch.note_channels(ch)
             try:
                 def _drain_rx() -> bool:
                     nonlocal bytes_rx_total, first_rx_logged
