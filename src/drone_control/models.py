@@ -48,10 +48,12 @@ class SystemStatus:
     camera_stream_error: Optional[str] = None
     env_error: Optional[str] = None
     battery_error: Optional[str] = None
+    box_io_enabled: bool = True
 
     def refresh(self, box) -> None:
         """Pull sensors, ADC, output pin state, and camera stream state from a live box controller."""
         self.monotonic_s = time.monotonic()
+        self.box_io_enabled = bool(getattr(box, "enclosure_io", True))
         self.env_error = getattr(box, "env_error", None)
         self.battery_error = getattr(box, "battery_error", None)
         if box.env is not None:

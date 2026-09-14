@@ -55,6 +55,11 @@ def format_crsf_status(d: dict) -> tuple[str, str]:
     if not d.get("ok"):
         return "CRSF: —", "off"
     if not d.get("crsf_serial_open"):
+        err = (d.get("crsf_serial_error") or "").strip()
+        if err:
+            return f"CRSF: serial closed · {err}", "off"
+        if not (d.get("crsf_output") or "").strip():
+            return "CRSF: serial closed · run drone_control.main (not box_server alone)", "off"
         return "CRSF: serial closed", "off"
     path = (d.get("crsf_serial_path") or "").strip()
     mode = (d.get("crsf_output") or "").strip()

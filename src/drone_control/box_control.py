@@ -5,6 +5,8 @@ Enclosure controller (Raspberry Pi or Luckfox Pico Pro/Max).
 - ADS1115 on I2C: box battery and drone battery via 20 kΩ / 2 kΩ dividers
   (ADC sees Vbat * 2/22 → multiply measured pin voltage by 11 for Vbat).
 - GPIO: status LED, servo PWM, drone power enable (e.g. MOSFET / relay gate).
+  Skipped in ``uart`` CRSF mode (board-as-RX to FC); I2C and PINIO are unused there.
+- Camera stream: optional; see ``drone_control.video`` (`CameraStream`).
 - Camera stream: optional; see ``drone_control.video`` (`CameraStream`).
   OpenIPC Luckfox: MIPI is Majestic RTP push, not rpicam-vid.
 
@@ -184,7 +186,7 @@ class BatteryMonitor:
 class BoxOutputs:
     """LED, servo, and drone power switching. gpiozero on Pi; sysfs GPIO/PWM on Luckfox."""
 
-    def __init__(self, drone_power_active_high: bool = False) -> None:
+    def __init__(self, drone_power_active_high: bool = False, *, enabled: bool = True) -> None:
         self._led = None
         self._servo = None
         self._drone_power = None
@@ -196,6 +198,13 @@ class BoxOutputs:
         self._servo_pin = BOX_SERVO_PIN
         self._drone_pin = BOX_DRONE_POWER_PIN
         self._pwmchip = _servo_pwmchip()
+
+        if not enabled:
+            msg = "unused in uart CRSF mode"
+            self.led_error = msg
+            self.servo_error = msg
+            self.drone_power_error = msg
+            return
 
         if _PROFILE.gpio_backend == "sysfs" or _PROFILE.name == BOARD_LUCKFOX:
             self._init_sysfs(drone_power_active_high)
@@ -357,7 +366,12 @@ class BoxOutputs:
 class BoxController:
     """GPIO/camera outputs; I2C sensors (env + ADC) are optional if init fails."""
 
-    def __init__(self, drone_power_active_high: bool = True) -> None:
+    def __init__(
+        self,
+        drone_power_active_high: bool = True,
+        *,
+        enable_enclosure_io: Optional[bool] = None,
+    ) -> None:
         self.env: Optional[EnvironmentSensor] = None
         self.batteries: Optional[BatteryMonitor] = None
         self.env_error: Optional[str] = None
@@ -365,8 +379,23 @@ class BoxController:
         self.runtime_sensor_error: Optional[str] = None
         self._i2c = None
 
-        self.gpio = BoxOutputs(drone_power_active_high=drone_power_active_high)
+        if enable_enclosure_io is None:
+            try:
+                from drone_control.crsf_bridge_state import enclosure_io_enabled
+            except ImportError:
+                from crsf_bridge_state import enclosure_io_enabled  # type: ignore
+            enable_enclosure_io = enclosure_io_enabled()
+        self.enclosure_io = bool(enable_enclosure_io)
+
+        self.gpio = BoxOutputs(
+            drone_power_active_high=drone_power_active_high,
+            enabled=self.enclosure_io,
+        )
         self.camera_stream = CameraStream()
+
+        if not self.enclosure_io:
+            _LOG.info("Box I2C and GPIO (PINIO) disabled (uart CRSF mode)")
+            return
 
         try:
             self._i2c = _open_i2c()
