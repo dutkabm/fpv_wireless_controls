@@ -47,6 +47,10 @@ BOX_DRONE_POWER_PIN = int(os.environ.get("BOX_DRONE_POWER_PIN", str(_PROFILE.dro
 # export BOX_I2C_BUS=1   # Pi /dev/i2c-1; Luckfox OpenIPC typically /dev/i2c-3
 
 
+# RV1106 CSI sensor (MIS5001) lives on i2c-4. Never open that bus from the box.
+_CAMERA_I2C_BUSES = {4}
+
+
 def _i2c_bus_id() -> int:
     return int(os.environ.get("BOX_I2C_BUS", str(_PROFILE.i2c_bus)))
 
@@ -59,24 +63,30 @@ def _servo_pwmchip() -> Optional[int]:
 
 
 def _open_i2c():
-    """Open the hardware I2C controller by bus number (not GPIO bit-bang)."""
+    """Open the hardware I2C controller by bus number (not GPIO bit-bang).
+
+    Do not fall back to ``busio.I2C(board.SCL, board.SDA)``: on OpenIPC that can
+    attach to the CSI camera bus (i2c-4) instead of the header (i2c-3).
+    """
     bid = _i2c_bus_id()
+    if bid in _CAMERA_I2C_BUSES:
+        raise RuntimeError(
+            f"I2C bus {bid} is the CSI camera; refusing to open it. "
+            "Set BOX_I2C_BUS=3 for the Luckfox header (I2C3_M1)."
+        )
+    dev = f"/dev/i2c-{bid}"
+    if not os.path.exists(dev):
+        raise FileNotFoundError(
+            f"{dev} missing (header I2C3 is disabled in DT; camera is i2c-4)"
+        )
     try:
         from adafruit_extended_bus import ExtendedI2C
 
         return ExtendedI2C(bid, frequency=400_000)
-    except ImportError:
-        pass
-    try:
-        import board
-        import busio
-
-        return busio.I2C(board.SCL, board.SDA, frequency=400_000)
     except ImportError as e:
         raise ImportError(
-            "I2C libs missing (need adafruit-blinka + adafruit-extended-bus). "
-            "Raspberry Pi: pip3 install -r src/drone_control/requirements-raspberry.txt "
-            "(Linux / OpenIPC: requirements-linux.txt is pyserial only)."
+            "I2C libs missing (need adafruit-extended-bus). "
+            "OpenIPC image has pyserial only; env/ADC sensors stay optional."
         ) from e
 
 
