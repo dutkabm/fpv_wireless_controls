@@ -280,7 +280,7 @@ class NetworkJoystickUI:
         self.rebuild_mapping_ui()
 
     def refresh_joysticks(self) -> None:
-        import pygame
+        from modules.joystick import rescan_joysticks
 
         if self.joy_ref.joystick is not None:
             try:
@@ -288,11 +288,7 @@ class NetworkJoystickUI:
             except Exception:
                 pass
             self.joy_ref.joystick = None
-        try:
-            pygame.joystick.quit()
-        except Exception:
-            pass
-        pygame.joystick.init()
+        rescan_joysticks()
         vals = self._joy_menu_values()
         self.joy_menu.configure(values=vals)
         cur = self.joy_var.get()

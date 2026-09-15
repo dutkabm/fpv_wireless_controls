@@ -5,6 +5,7 @@ from __future__ import annotations
 import configparser
 import logging
 import os
+import sys
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -58,6 +59,14 @@ def get_pwm_channels_from_joystick(
 ) -> List[int]:
     if threading.current_thread() is threading.main_thread():
         pygame.event.pump()
+
+    if joystick is not None:
+        poll = getattr(joystick, "poll", None)
+        if callable(poll):
+            try:
+                poll()
+            except Exception:
+                pass
 
     if toggle_latch is not None:
         toggle_latch.sync_joystick(joystick)
@@ -146,7 +155,10 @@ def load_controller_config(config_path: str) -> Tuple[Optional[int], Dict, Dict,
         _ji = _strip_inline_comment(general.get("joystick_index", fallback="-1")).strip().lower()
         if _ji == "auto":
             pygame.joystick.init()
-            default_joystick_index = 0 if pygame.joystick.get_count() > 0 else None
+            if pygame.joystick.get_count() > 0 or _hid_joystick_names():
+                default_joystick_index = 0
+            else:
+                default_joystick_index = None
         else:
             try:
                 ji = int(_ji)
@@ -455,27 +467,86 @@ def merge_default_joystick_mappings(
     return added
 
 
+def _pygame_joystick_count() -> int:
+    try:
+        if not pygame.joystick.get_init():
+            pygame.joystick.init()
+        return int(pygame.joystick.get_count())
+    except pygame.error:
+        return 0
+
+
+def _hid_joystick_names() -> List[str]:
+    if sys.platform != "darwin":
+        return []
+    try:
+        from modules.macos_hid_joystick import list_macos_hid_joystick_names
+    except Exception as e:
+        _LOG.debug("macOS HID joystick backend unavailable: %s", e)
+        return []
+    try:
+        return list_macos_hid_joystick_names()
+    except Exception as e:
+        _LOG.warning("macOS HID joystick scan failed: %s", e)
+        return []
+
+
+def rescan_joysticks() -> None:
+    """Re-enumerate devices. Avoids ``pygame.joystick.quit()`` on macOS (hangs with Tk)."""
+    if sys.platform == "darwin":
+        try:
+            if not pygame.joystick.get_init():
+                pygame.joystick.init()
+            pygame.event.pump()
+        except pygame.error:
+            pass
+        return
+    try:
+        pygame.joystick.quit()
+    except Exception:
+        pass
+    pygame.joystick.init()
+
+
 def open_joystick(
     index: Optional[int],
-    previous: Optional[pygame.joystick.Joystick] = None,
-) -> Optional[pygame.joystick.Joystick]:
+    previous: Optional[Any] = None,
+) -> Optional[Any]:
     """Open a joystick by index. Quits ``previous`` only — avoids pygame.joystick.quit()/init() each time (hangs on macOS + Tk)."""
     if previous is not None:
         try:
             previous.quit()
         except Exception:
             pass
-    if index is None or index < 0 or index >= pygame.joystick.get_count():
+    if index is None or index < 0:
         return None
-    if not pygame.joystick.get_init():
-        pygame.joystick.init()
-    j = pygame.joystick.Joystick(index)
-    j.init()
-    return j
+    n_pg = _pygame_joystick_count()
+    if n_pg > 0:
+        if index >= n_pg:
+            return None
+        j = pygame.joystick.Joystick(index)
+        j.init()
+        return j
+    if sys.platform == "darwin":
+        try:
+            from modules.macos_hid_joystick import open_macos_hid_joystick
+        except Exception as e:
+            _LOG.debug("macOS HID joystick backend unavailable: %s", e)
+            return None
+        try:
+            return open_macos_hid_joystick(index)
+        except OSError as e:
+            _LOG.warning("Failed to open macOS HID joystick %s: %s", index, e)
+            return None
+    return None
 
 
 def joy_menu_values() -> List[str]:
-    n = pygame.joystick.get_count()
-    if n == 0:
-        return ["(no joystick)"]
-    return [f"{i}: {pygame.joystick.Joystick(i).get_name()}" for i in range(n)]
+    n = _pygame_joystick_count()
+    if n > 0:
+        return [f"{i}: {pygame.joystick.Joystick(i).get_name()}" for i in range(n)]
+    hid = _hid_joystick_names()
+    if hid:
+        _LOG.debug("pygame saw 0 joysticks; listing macOS HID: %s", hid)
+        return [f"{i}: {name}" for i, name in enumerate(hid)]
+    return ["(no joystick)"]

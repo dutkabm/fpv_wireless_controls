@@ -112,6 +112,16 @@ def main():
 
     joy_index, axis_map, button_map, hat_map = load_controller_config(args.config)
     joystick = open_joystick(joy_index, None)
+    if joystick is None:
+        _LOG.warning(
+            "No joystick opened (index=%s). Put the radio in USB Joystick mode, then click Rescan.",
+            joy_index,
+        )
+    else:
+        try:
+            _LOG.info("Joystick: %s", joystick.get_name())
+        except Exception:
+            pass
     prune_joystick_mappings(joystick, axis_map, button_map, hat_map)
     n_pre = apply_rc_preset_mappings(joystick, axis_map, button_map, hat_map)
     n_auto = merge_default_joystick_mappings(joystick, axis_map, button_map, hat_map)
@@ -420,7 +430,7 @@ def main():
                         hi = int(parts[1])
                         hx, hy = j.get_hat(hi)
                         lbl.configure(text=str(hx) if parts[2] == "x" else str(hy))
-                except (ValueError, IndexError, pygame.error):
+                except (ValueError, IndexError, pygame.error, OSError):
                     lbl.configure(text="—")
         if args.print_raw and j is not None:
             nowm = time.monotonic()
