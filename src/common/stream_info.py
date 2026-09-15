@@ -51,6 +51,50 @@ def _norm_path(raw: Optional[str], default: str = "/") -> str:
     return p
 
 
+# OpenIPC Majestic HTTP/RTSP login (same as SSH on most images).
+DEFAULT_RTSP_USER = "root"
+DEFAULT_RTSP_PASSWORD = "12345"
+
+
+def rtsp_credentials() -> Tuple[str, str]:
+    """Majestic RTSP uses the HTTP login. OpenIPC default is root/12345."""
+    _y_user, y_password = _creds_from_majestic_yaml()
+    user = _env("BOX_RTSP_USER", "") or DEFAULT_RTSP_USER
+    password = _env("BOX_RTSP_PASSWORD", "")
+    if not password:
+        password = y_password if y_password is not None else DEFAULT_RTSP_PASSWORD
+    return user, password
+
+
+def _creds_from_majestic_yaml() -> Tuple[Optional[str], Optional[str]]:
+    try:
+        text = open("/etc/majestic.yaml", encoding="utf-8", errors="replace").read()
+    except OSError:
+        return None, None
+    login: Optional[str] = None
+    password: Optional[str] = None
+    in_http = False
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" \t"))
+        line = raw.strip()
+        if line.startswith("http:"):
+            in_http = True
+            continue
+        if in_http and indent == 0 and line.endswith(":") and not line.startswith("http:"):
+            in_http = False
+        if not in_http:
+            continue
+        key, _, val = line.partition(":")
+        val = val.strip().strip("'\"")
+        if key == "login":
+            login = val
+        elif key == "password":
+            password = val
+    return login, password
+
+
 @dataclass
 class StreamInfo:
     """How a ground-station player should open the live camera."""
@@ -63,6 +107,8 @@ class StreamInfo:
     height: Optional[int] = None
     fps: Optional[int] = None
     source: str = ""
+    user: str = ""
+    password: str = ""
 
     def url_template(self) -> str:
         if self.kind == KIND_RTSP:
@@ -78,6 +124,10 @@ class StreamInfo:
             "url": self.url_template(),
             "source": self.source,
         }
+        if self.user:
+            d["user"] = self.user
+        if self.password != "":
+            d["password"] = self.password
         if self.width:
             d["width"] = int(self.width)
         if self.height:
@@ -88,6 +138,7 @@ class StreamInfo:
 
 
 def majestic_stream() -> StreamInfo:
+    user, password = rtsp_credentials()
     return StreamInfo(
         kind=KIND_RTSP,
         codec=_norm_codec(_env("BOX_STREAM_MAJESTIC_CODEC", CODEC_H264)),
@@ -97,6 +148,8 @@ def majestic_stream() -> StreamInfo:
         height=_env_int("BOX_STREAM_MAJESTIC_HEIGHT", None),
         fps=_env_int("BOX_STREAM_MAJESTIC_FPS", None),
         source="majestic",
+        user=user,
+        password=password,
     )
 
 
@@ -183,18 +236,22 @@ def gstreamer_play_argv(
     if kind == KIND_RTSP:
         url = format_stream_url(stream, host)
         chain = _codec_chain(codec)
-        return [
+        # Quote location: gst-launch splits on '=' so /stream=0 would be dropped.
+        argv = [
             gst_bin,
             "rtspsrc",
-            f"location={url}",
+            f'location="{url}"',
             "latency=0",
-            "!",
-            "application/x-rtp,media=video",
-            "!",
-            *chain,
-            "!",
-            *sink,
+            "protocols=udp",
         ]
+        user = str(stream.get("user") or "").strip()
+        password = str(stream.get("password") or "")
+        if not user and str(stream.get("source") or "") in ("majestic", "mipi", ""):
+            user, password = DEFAULT_RTSP_USER, DEFAULT_RTSP_PASSWORD
+        if user:
+            argv.extend([f"user-id={user}", f"user-pw={password}"])
+        argv.extend(["!", "application/x-rtp,media=video", "!", *chain, "!", *sink])
+        return argv
     port = int(stream.get("port") or 5004)
     if codec == CODEC_JPEG:
         caps = "application/x-rtp,encoding-name=JPEG,payload=26"
