@@ -237,12 +237,16 @@ def gstreamer_play_argv(
         url = format_stream_url(stream, host)
         chain = _codec_chain(codec)
         # Quote location: gst-launch splits on '=' so /stream=0 would be dropped.
+        # TCP interleaved: RTSP-UDP (protocols=udp) does SETUP/PLAY then never
+        # receives RTP — "Redistribute latency" then a generic connect error.
+        proto = _env("BOX_RTSP_PROTOCOLS", "tcp")
         argv = [
             gst_bin,
             "rtspsrc",
             f'location="{url}"',
-            "latency=0",
-            "protocols=udp",
+            "latency=80",
+            f"protocols={proto}",
+            "drop-on-latency=true",
         ]
         user = str(stream.get("user") or "").strip()
         password = str(stream.get("password") or "")
@@ -250,7 +254,7 @@ def gstreamer_play_argv(
             user, password = DEFAULT_RTSP_USER, DEFAULT_RTSP_PASSWORD
         if user:
             argv.extend([f"user-id={user}", f"user-pw={password}"])
-        argv.extend(["!", "application/x-rtp,media=video", "!", *chain, "!", *sink])
+        argv.extend(["!", "queue", "!", *chain, "!", *sink])
         return argv
     port = int(stream.get("port") or 5004)
     if codec == CODEC_JPEG:

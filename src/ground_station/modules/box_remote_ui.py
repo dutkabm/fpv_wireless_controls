@@ -300,12 +300,25 @@ class BoxRemotePanel:
         return "usb" if bool(self.usb_cam_var.get()) else "mipi"
 
     def _stream_from_status(self, d: dict) -> Optional[dict]:
-        stream = d.get("stream")
-        if isinstance(stream, dict) and stream.get("kind"):
+        stream = d.get("stream") if isinstance(d.get("stream"), dict) else None
+        src = str(
+            (stream or {}).get("source")
+            or d.get("camera_source")
+            or self._selected_camera_source()
+            or ""
+        ).strip().lower()
+        path = str((stream or {}).get("path") or "")
+        thermal = src in ("term-cam", "usb") or "/live/" in path
+        if thermal:
+            if stream and stream.get("kind"):
+                return stream
+            return rtp_stream("usb").to_dict() if src == "usb" else stream
+        # Majestic: Video ON already pushes RTP H264 to UDP 5004 — use that
+        # (real UDP, low latency). RTSP-UDP from rtspsrc does not deliver RTP.
+        if d.get("camera_streaming"):
+            return rtp_stream("mipi").to_dict()
+        if stream and stream.get("kind"):
             return stream
-        src = (d.get("camera_source") or self._selected_camera_source() or "mipi").strip().lower()
-        if src in ("usb", "mipi") and d.get("camera_streaming"):
-            return rtp_stream("usb" if src == "usb" else "mipi").to_dict()
         return None
 
     def _follow_stream(self, d: dict) -> None:

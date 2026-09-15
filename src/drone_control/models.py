@@ -114,6 +114,15 @@ def _stream_for_box(box) -> Optional[dict[str, Any]]:
 
         info = current_stream_info()
         if info:
+            cs = getattr(box, "camera_stream", None)
+            if (
+                info.get("source") == "majestic"
+                and cs is not None
+                and getattr(cs, "is_running", False)
+            ):
+                from common.stream_info import rtp_stream
+
+                return rtp_stream("mipi").to_dict()
             return info
     except Exception:
         pass
